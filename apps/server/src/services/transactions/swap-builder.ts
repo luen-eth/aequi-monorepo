@@ -3,6 +3,7 @@ import type { Address, Hex } from 'viem'
 import { AEQUI_EXECUTOR_ADDRESS, EXECUTOR_INTERHOP_BUFFER_BPS } from '../../config/constants'
 import type { ChainConfig, PriceQuote, PriceSource, TokenMetadata } from '../../types'
 import { AEQUI_EXECUTOR_ABI, V2_ROUTER_ABI, V3_ROUTER_ABI } from '../../utils/abi'
+import { clampSlippage } from '../../utils/trading'
 
 interface ExecutorCallPlan {
   target: Address
@@ -40,16 +41,6 @@ export interface SwapTransaction {
     calls: { target: Address; value: bigint; data: Hex }[]
     tokensToFlush: Address[]
   }
-}
-
-const clampSlippage = (value: number) => {
-  if (!Number.isFinite(value) || Number.isNaN(value) || value < 0) {
-    return 0
-  }
-  if (value > 5000) {
-    return 5000
-  }
-  return Math.floor(value)
 }
 
 const encodeV3Path = (tokens: Address[], fees: number[]): Hex => {

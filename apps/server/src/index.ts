@@ -3,25 +3,28 @@ import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
 import { z } from 'zod'
-import { checksumAddress, getAddress, isAddress } from 'viem'
+import { isAddress } from 'viem'
 import type { Address } from 'viem'
 import { getChainConfig, SUPPORTED_CHAINS } from './config/chains'
 import { SWAP_QUOTE_TTL_SECONDS } from './config/constants'
+import { appConfig } from './config/app-config'
 import { ExchangeService } from './services/exchange/exchange-service'
 import { TokenService } from './services/tokens/token-service'
 import { PriceService } from './services/price/price-service'
 import { QuoteService } from './services/quote/quote-service'
 import { AllowanceService } from './services/tokens/allowance-service'
 import { SwapBuilder } from './services/transactions/swap-builder'
-import { getPublicClient } from './utils/clients'
 import { formatAmountFromUnits, parseAmountToUnits } from './utils/units'
+import { DefaultChainClientProvider } from './services/clients/default-chain-client-provider'
+import { normalizeAddress } from './utils/trading'
 import type { ChainConfig, PriceQuote, QuoteResult, RoutePreference, TokenMetadata } from './types'
 
+const chainClientProvider = new DefaultChainClientProvider()
 const exchangeService = new ExchangeService()
-const tokenService = new TokenService()
-const priceService = new PriceService(tokenService)
+const tokenService = new TokenService(chainClientProvider)
+const priceService = new PriceService(tokenService, chainClientProvider)
 const quoteService = new QuoteService(tokenService, priceService)
-const allowanceService = new AllowanceService(tokenService)
+const allowanceService = new AllowanceService(tokenService, chainClientProvider)
 const swapBuilder = new SwapBuilder()
 
 const chainQuerySchema = z.object({
@@ -40,8 +43,6 @@ const resolveRoutePreference = (value?: string): RoutePreference => {
     }
     return 'auto'
 }
-
-const normalizeAddress = (value: string): Address => getAddress(checksumAddress(value as Address)) as Address
 
 const resolveChain = (chainParam: string) => {
     const chain = getChainConfig(chainParam)
@@ -111,13 +112,13 @@ const formatPriceQuote = (chain: ChainConfig, quote: PriceQuote, routePreference
 }
 export const buildServer = async () => {
     const app = Fastify({
-        logger: process.env.NODE_ENV !== 'test',
+        logger: appConfig.server.loggerEnabled,
     })
 
     await app.register(cors, { origin: true })
     await app.register(rateLimit, {
-        max: Number(process.env.RATE_LIMIT_MAX ?? 120),
-        timeWindow: process.env.RATE_LIMIT_WINDOW ?? '1 minute',
+        max: appConfig.rateLimit.max,
+        timeWindow: appConfig.rateLimit.window,
     })
 
     app.get('/health', async () => ({ status: 'ok' }))
@@ -504,7 +505,7 @@ export const buildServer = async () => {
         let latestBlockNumber: bigint | null = null
         let latestBlockTimestamp: bigint | null = null
         try {
-            const client = await getPublicClient(chain)
+            const client = await chainClientProvider.getClient(chain)
             const latestBlock = await client.getBlock()
             latestBlockNumber = latestBlock.number ?? null
             latestBlockTimestamp = latestBlock.timestamp ?? null
@@ -587,8 +588,8 @@ export const buildServer = async () => {
 
 export const startServer = async () => {
     const app = await buildServer()
-    const port = Number(process.env.PORT ?? 3000)
-    const host = process.env.HOST ?? '0.0.0.0'
+    const port = appConfig.server.port
+    const host = appConfig.server.host
 
     try {
         await app.listen({ port, host })

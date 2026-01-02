@@ -2,7 +2,8 @@ import { Buffer } from 'node:buffer'
 import { erc20Abi, getAddress, type Address, type PublicClient } from 'viem'
 import { DEFAULT_TOKEN_CACHE_TTL_MS, INTERMEDIATE_TOKENS } from '../../config/constants'
 import type { ChainConfig, TokenMetadata } from '../../types'
-import { getPublicClient } from '../../utils/clients'
+import type { IChainClientProvider } from '../clients/types'
+import { DefaultChainClientProvider } from '../clients/default-chain-client-provider'
 
 interface CachedToken {
   value: TokenMetadata
@@ -35,7 +36,10 @@ const decodeString = (value: unknown, fallback: string): string => {
 export class TokenService {
   private readonly cache = new Map<string, CachedToken>()
 
-  constructor(private readonly ttlMs = DEFAULT_TOKEN_CACHE_TTL_MS) {
+  constructor(
+    private readonly clientProvider: IChainClientProvider = new DefaultChainClientProvider(),
+    private readonly ttlMs = DEFAULT_TOKEN_CACHE_TTL_MS,
+  ) {
     this.seedIntermediates()
   }
 
@@ -57,7 +61,7 @@ export class TokenService {
   }
 
   private getClient(chain: ChainConfig): Promise<PublicClient> {
-    return getPublicClient(chain)
+    return this.clientProvider.getClient(chain)
   }
 
   async getTokenMetadata(chain: ChainConfig, address: Address): Promise<TokenMetadata> {

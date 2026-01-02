@@ -1,5 +1,5 @@
-import { getAddress } from 'viem'
 import type { Address } from 'viem'
+import { normalizeAddress as normalizeAddressInternal } from './trading'
 
 export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
@@ -97,4 +97,4 @@ export const V3_POOL_ABI = [
   },
 ] as const
 
-export const normalizeAddress = (address: Address): Address => getAddress(address)
+export const normalizeAddress = (address: Address): Address => normalizeAddressInternal(address)

@@ -1,9 +1,10 @@
 import { encodeFunctionData, erc20Abi, maxUint256 } from 'viem'
 import type { Address, Hex } from 'viem'
 import type { ChainConfig } from '../../types'
-import { getPublicClient } from '../../utils/clients'
 import { parseAmountToUnits } from '../../utils/units'
 import { TokenService } from './token-service'
+import type { IChainClientProvider } from '../clients/types'
+import { DefaultChainClientProvider } from '../clients/default-chain-client-provider'
 
 interface AllowanceResult {
   token: Address
@@ -24,7 +25,10 @@ interface ApprovalCalldataResult {
 }
 
 export class AllowanceService {
-  constructor(private readonly tokenService: TokenService) {}
+  constructor(
+    private readonly tokenService: TokenService,
+    private readonly clientProvider: IChainClientProvider = new DefaultChainClientProvider(),
+  ) {}
 
   async getAllowances(
     chain: ChainConfig,
@@ -36,7 +40,7 @@ export class AllowanceService {
       return []
     }
 
-    const client = await getPublicClient(chain)
+    const client = await this.clientProvider.getClient(chain)
     const contracts = tokens.map((token) => ({
       address: token,
       abi: erc20Abi,

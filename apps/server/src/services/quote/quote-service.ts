@@ -1,21 +1,9 @@
 import type { Address } from 'viem'
 import type { ChainConfig, QuoteResult, RoutePreference } from '../../types'
 import { parseAmountToUnits } from '../../utils/units'
+import { clampSlippage } from '../../utils/trading'
 import { PriceService } from '../price/price-service'
 import { TokenService } from '../tokens/token-service'
-
-const clampSlippage = (value: number) => {
-  if (Number.isNaN(value) || !Number.isFinite(value)) {
-    return 0
-  }
-  if (value < 0) {
-    return 0
-  }
-  if (value > 5000) {
-    return 5000
-  }
-  return Math.floor(value)
-}
 
 export class QuoteService {
   constructor(

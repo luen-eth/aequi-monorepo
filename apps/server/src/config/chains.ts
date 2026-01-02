@@ -1,16 +1,8 @@
 import { mainnet, bsc as bscChain } from 'viem/chains'
-import type { Address } from 'viem'
 import type { ChainConfig, ChainKey } from '../types'
 import { FeeAmount as PancakeFeeAmount } from '@pancakeswap/v3-sdk'
 import { FeeAmount } from '@uniswap/v3-sdk'
-
-const ensureEnvList = (value: string | undefined) =>
-    value?.split(',').map((url) => url.trim()).filter(Boolean) ?? []
-
-const envAddress = (name: string, fallback: Address): Address => {
-    const value = process.env[name]
-    return (value ? (value as Address) : fallback)
-}
+import { appConfig } from './app-config'
 
 export const CHAIN_CONFIGS: Record<ChainKey, ChainConfig> = {
     ethereum: {
@@ -18,14 +10,8 @@ export const CHAIN_CONFIGS: Record<ChainKey, ChainConfig> = {
         id: mainnet.id,
         name: 'Ethereum',
         nativeCurrencySymbol: mainnet.nativeCurrency.symbol,
-        rpcUrls: (() => {
-            const urls = ensureEnvList(process.env.RPC_URL_ETH)
-            return urls.length ? urls : Array.from(mainnet.rpcUrls.default.http)
-        })(),
-        fallbackRpcUrls: (() => {
-            const urls = ensureEnvList(process.env.RPC_URL_ETH_FALLBACK)
-            return urls.length ? urls : []
-        })(),
+        rpcUrls: appConfig.rpc.ethereum.length ? appConfig.rpc.ethereum : Array.from(mainnet.rpcUrls.default.http),
+        fallbackRpcUrls: appConfig.rpc.ethereumFallback,
         viemChain: mainnet,
         dexes: [
             {
@@ -33,8 +19,8 @@ export const CHAIN_CONFIGS: Record<ChainKey, ChainConfig> = {
                 label: 'Uniswap V2',
                 protocol: 'uniswap',
                 version: 'v2',
-                factoryAddress: envAddress('UNISWAP_V2_FACTORY', '0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6'),
-                routerAddress: envAddress('UNISWAP_V2_ROUTER', '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D'),
+                factoryAddress: appConfig.dex.uniswapV2Factory,
+                routerAddress: appConfig.dex.uniswapV2Router,
             },
             {
                 id: 'uniswap-v3',
@@ -53,17 +39,13 @@ export const CHAIN_CONFIGS: Record<ChainKey, ChainConfig> = {
         name: 'BNB Smart Chain',
         nativeCurrencySymbol: bscChain.nativeCurrency.symbol,
         rpcUrls: (() => {
-            const urls = ensureEnvList(process.env.RPC_URL_BSC)
-            if (urls.length) {
-                return urls
+            if (appConfig.rpc.bsc.length) {
+                return appConfig.rpc.bsc
             }
             const defaults = bscChain.rpcUrls.default?.http ?? []
             return defaults.length ? Array.from(defaults) : ['https://bsc.drpc.org']
         })(),
-        fallbackRpcUrls: (() => {
-            const urls = ensureEnvList(process.env.RPC_URL_BSC_FALLBACK)
-            return urls.length ? urls : []
-        })(),
+        fallbackRpcUrls: appConfig.rpc.bscFallback,
         viemChain: bscChain,
         dexes: [
             {
