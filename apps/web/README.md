@@ -1,46 +1,33 @@
 # Aequi Web Interface
 
-> **⚠️ WORK IN PROGRESS**
-
-The Aequi Web Interface is the user-facing frontend for the Aequi protocol, allowing users to perform swaps, view token prices, and manage their portfolio.
+React/Vite frontend for the Aequi DEX aggregator. Talks to the Fastify API to fetch prices/quotes and builds swaps, with Wagmi for wallet connectivity.
 
 ## Features
+- Swap flow that requests `/price`, `/quote`, and `/swap` from the server.
+- Token search/import backed by the server `/token` endpoint with local persistence.
+- Wallet wiring via Wagmi + `viem` on mainnet/BSC.
 
-- **Swap Interface**: Intuitive UI for executing token swaps.
-- **Wallet Connection**: Integration with popular wallets via Wagmi.
-- **Real-time Updates**: Live price and quote updates.
-- **Transaction Management**: Track and manage swap transactions.
+## Stack
+- React 19, Vite 7, TypeScript.
+- Wagmi + `viem` for wallet/RPC.
+- Axios HTTP client (see `src/lib/http.ts`).
 
-## Tech Stack
+## Environment
+- `VITE_API_BASE_URL` – server base URL (defaults to `http://localhost:3000`).
 
-- **Framework**: [React](https://reactjs.org/)
-- **Build Tool**: [Vite](https://vitejs.dev/)
-- **Web3 Hooks**: [Wagmi](https://wagmi.sh/)
-- **Styling**: [Tailwind CSS](https://tailwindcss.com/)
-- **Language**: TypeScript
-
-## Getting Started
-
-### Prerequisites
-
-Ensure you have the environment variables set up. Copy `.env.example` to `.env` and fill in the required values.
-
+## Run locally
 ```bash
-cp .env.example .env
-```
-
-### Running Locally
-
-```bash
-# Install dependencies (from root)
+# install at repo root
 bun install
 
-# Start development server
+# start dev server
+cd apps/web
 bun run dev
+# opens on http://localhost:5173
 ```
 
-The application will be available at `http://localhost:5173`.
-
-## License
-
-MIT
+## Scripts
+- `bun run dev` – Vite dev server.
+- `bun run build` – type-check + production build.
+- `bun run lint` – ESLint.
+- `bun run preview` – preview production build.
