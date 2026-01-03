@@ -1,8 +1,20 @@
 # Aequi Monorepo
 
-> ⚠️ Work in progress: APIs, contracts, and behavior may change; not production-audited yet.
-
 Aequi is a DEX aggregator and swap executor for Ethereum and BSC. The monorepo is Turbo-managed, uses TypeScript across all packages, and prefers Bun for local workflows.
+
+## Architecture
+
+The platform currently operates with a **router-based** approach, where swaps are executed through DEX router contracts (Uniswap/Pancake). For complex multi-hop routes, the AequiExecutor contract orchestrates the sequence of calls with automatic approval management and balance reconciliation.
+
+### Current Implementation
+- Single-hop swaps use DEX router contracts directly
+- Multi-hop swaps use AequiExecutor for atomic execution
+- Native token support (BNB/ETH) with automatic wrap/unwrap
+- Gas estimation provided by backend RPC simulation
+- Route preference system (auto/v2/v3) for optimal path selection
+
+### Roadmap
+Direct pool integration is planned to reduce gas costs by 25-30% through pool-level swap execution, eliminating router overhead. This will enable flash swap capabilities and improved MEV protection while maintaining the current security model.
 
 ## Packages
 - **apps/server** – Fastify API that discovers pools, prices routes, returns quotes, and builds calldata using `@aequi/core` and `@aequi/pricing`.

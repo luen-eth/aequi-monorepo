@@ -1,10 +1,14 @@
 # Aequi Server
 
-> ⚠️ Work in progress: endpoints and calldata formats may change; not production-ready.
-
-Fastify API that discovers pools, prices routes, and builds calldata for direct router swaps or AequiExecutor multicall.
+Fastify API that discovers liquidity pools, prices routes, and builds transaction calldata for DEX swaps on Ethereum and BSC.
 
 ## What it does
+- Discovers Uniswap/Pancake V2+V3 pools and scores routes via `@aequi/pricing`
+- Returns spot prices (`/price`) and executable quotes with slippage bounds (`/quote`)
+- Builds calldata for swaps (`/swap`) using `@aequi/core` `SwapBuilder`
+- Provides gas estimates through RPC simulation (20% buffer applied)
+- Supports native tokens (BNB/ETH) with automatic wrap/unwrap
+- Token metadata (`/token`), DEX listings (`/exchange`), allowance batching (`/allowance`), approval calldata (`/approve`)
 - Discovers Uniswap/Pancake V2+V3 pools (Ethereum + BSC) and scores routes via `@aequi/pricing`.
 - Returns spot prices (`/price`) and executable quotes with slippage bounds (`/quote`).
 - Builds calldata for swaps (`/swap`) using `@aequi/core` `SwapBuilder` with inter-hop buffering and per-hop approvals.
