@@ -73,4 +73,5 @@ export interface QuoteResult {
   slippageBps: number
   tokenIn: TokenMetadata
   tokenOut: TokenMetadata
+  estimatedGas?: bigint
 }

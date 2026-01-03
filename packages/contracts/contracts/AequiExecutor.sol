@@ -16,18 +16,10 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Address for address;
 
-    // --- Events ---
-    
-    event Executed(address indexed user, uint256 pulls, uint256 calls, uint256 ethReturned);
-    event Rescued(address indexed token, address indexed to, uint256 amount);
-    event RescuedETH(address indexed to, uint256 amount);
-
     // --- Errors ---
     
     error ExecutionFailed(uint256 index, address target, bytes reason);
     error InvalidInjectionOffset(uint256 offset, uint256 length);
-    error InvalidRecipient();
-    error DuplicateFlushToken(address token);
     error ZeroAmountInjection();
 
     // --- Structs ---
@@ -61,28 +53,22 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
 
     // --- Admin Functions ---
 
-    /// @notice Pauses the contract, preventing execution.
     function pause() external onlyOwner {
         _pause();
     }
 
-    /// @notice Unpauses the contract.
     function unpause() external onlyOwner {
         _unpause();
     }
 
     /// @notice Rescues ERC20 tokens stuck in the contract (should not happen in normal operation).
     function rescueFunds(address token, address to, uint256 amount) external onlyOwner {
-        if (to == address(0)) revert InvalidRecipient();
         IERC20(token).safeTransfer(to, amount);
-        emit Rescued(token, to, amount);
     }
 
     /// @notice Rescues ETH stuck in the contract.
     function rescueETH(address payable to, uint256 amount) external onlyOwner {
-        if (to == address(0)) revert InvalidRecipient();
         Address.sendValue(to, amount);
-        emit RescuedETH(to, amount);
     }
 
     // --- Main Execution ---
@@ -99,67 +85,45 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         Call[] calldata calls,
         address[] calldata tokensToFlush
     ) external payable nonReentrant whenNotPaused returns (bytes[] memory results) {
-        // 1. Snapshot balances for delta flushing (Dust Protection)
-        // We only want to return what was gained during THIS execution, not pre-existing balances.
         uint256 ethBalanceBefore = address(this).balance - msg.value;
         uint256[] memory tokenBalancesBefore = _snapshotBalances(tokensToFlush);
 
-        // 3. Pull Tokens
         _pullTokens(pulls);
-
-        // 4. Set Approvals
         _setApprovals(approvals);
-
-        // 5. Execute Calls
         results = _performCalls(calls);
-
-        // 6. Revoke Approvals
         _revokeApprovals(approvals);
-
-        // 7. Flush Deltas
         _flushDeltas(msg.sender, tokensToFlush, tokenBalancesBefore, ethBalanceBefore);
-        
-        emit Executed(msg.sender, pulls.length, calls.length, address(this).balance - ethBalanceBefore);
     }
 
     // --- Internal Helpers ---
 
     function _snapshotBalances(address[] calldata tokens) private view returns (uint256[] memory balances) {
         balances = new uint256[](tokens.length);
-        for (uint256 i = 0; i < tokens.length; i++) {
-            if (tokens[i] != address(0)) {
-                // Check for duplicates to prevent incorrect delta calculations
-                for (uint256 j = 0; j < i; j++) {
-                    if (tokens[j] == tokens[i]) revert DuplicateFlushToken(tokens[i]);
-                }
-                balances[i] = IERC20(tokens[i]).balanceOf(address(this));
-            }
+        for (uint256 i; i < tokens.length;) {
+            balances[i] = IERC20(tokens[i]).balanceOf(address(this));
+            unchecked { ++i; }
         }
     }
 
     function _pullTokens(TokenPull[] calldata pulls) private {
-        for (uint256 i = 0; i < pulls.length; i++) {
+        for (uint256 i; i < pulls.length;) {
             TokenPull calldata p = pulls[i];
-            if (p.amount > 0) {
-                IERC20(p.token).safeTransferFrom(msg.sender, address(this), p.amount);
-            }
+            IERC20(p.token).safeTransferFrom(msg.sender, address(this), p.amount);
+            unchecked { ++i; }
         }
     }
 
     function _setApprovals(Approval[] calldata approvals) private {
-        for (uint256 i = 0; i < approvals.length; i++) {
+        for (uint256 i; i < approvals.length;) {
             Approval calldata a = approvals[i];
-            if (a.amount > 0) {
-                // SafeERC20 handles the approve(0) pattern internally if needed for some tokens,
-                // but explicit reset is safer for USDT-like tokens that revert on non-zero to non-zero change.
-                IERC20(a.token).forceApprove(a.spender, a.amount);
-            }
+            IERC20(a.token).forceApprove(a.spender, a.amount);
+            unchecked { ++i; }
         }
     }
 
     function _performCalls(Call[] calldata calls) private returns (bytes[] memory results) {
         results = new bytes[](calls.length);
-        for (uint256 i = 0; i < calls.length; i++) {
+        for (uint256 i; i < calls.length;) {
             Call calldata c = calls[i];
             
             bytes memory data = c.data;
@@ -193,16 +157,17 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
                 }
             }
             results[i] = ret;
+            unchecked { ++i; }
         }
     }
 
     function _revokeApprovals(Approval[] calldata approvals) private {
-        for (uint256 i = 0; i < approvals.length; i++) {
+        for (uint256 i; i < approvals.length;) {
             Approval calldata a = approvals[i];
-            if (a.revokeAfter && a.amount > 0) {
-                // Reset to 0
+            if (a.revokeAfter) {
                 IERC20(a.token).forceApprove(a.spender, 0);
             }
+            unchecked { ++i; }
         }
     }
 
@@ -212,19 +177,14 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         uint256[] memory balancesBefore,
         uint256 ethBalanceBefore
     ) private {
-        if (recipient == address(0)) revert InvalidRecipient();
-
-        // Flush Tokens
-        for (uint256 i = 0; i < tokens.length; i++) {
-            if (tokens[i] == address(0)) continue;
-            
+        for (uint256 i; i < tokens.length;) {
             uint256 balanceAfter = IERC20(tokens[i]).balanceOf(address(this));
             if (balanceAfter > balancesBefore[i]) {
                 IERC20(tokens[i]).safeTransfer(recipient, balanceAfter - balancesBefore[i]);
             }
+            unchecked { ++i; }
         }
 
-        // Flush ETH
         uint256 ethBalanceAfter = address(this).balance;
         if (ethBalanceAfter > ethBalanceBefore) {
             Address.sendValue(payable(recipient), ethBalanceAfter - ethBalanceBefore);

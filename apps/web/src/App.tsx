@@ -505,14 +505,16 @@ function App() {
         throw new Error('Missing transaction payload')
       }
       
-      const baseGasLimit = BigInt(swapData.transaction.call.value ?? '0') > 0n ? 200000n : 150000n
+      const gasLimit = swapData.transaction.estimatedGas 
+        ? BigInt(swapData.transaction.estimatedGas)
+        : undefined
       
       const swapTxHash = await sendTransactionAsync({
         chainId: selectedChainId,
         to: swapData.transaction.call.to as `0x${string}`,
         data: swapData.transaction.call.data as `0x${string}`,
         value: BigInt(swapData.transaction.call.value ?? '0'),
-        gas: baseGasLimit,
+        gas: gasLimit,
       })
       setSwapHash(swapTxHash)
       await waitForTransactionReceipt(wagmiConfig, { chainId: selectedChainId, hash: swapTxHash })

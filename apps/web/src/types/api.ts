@@ -136,6 +136,7 @@ export interface SwapTransactionPayload {
   calls: ExecutorCallPlan[]
   call: RouterCall | null
   executor: ExecutorPlan | null
+  estimatedGas?: string
 }
 
 export interface SwapResponse extends QuoteResponse {

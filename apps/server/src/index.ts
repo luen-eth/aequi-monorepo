@@ -567,11 +567,26 @@ export const buildServer = async () => {
 
         let latestBlockNumber: bigint | null = null
         let latestBlockTimestamp: bigint | null = null
+        let estimatedGas: bigint | undefined
         try {
             const client = await chainClientProvider.getClient(chain)
             const latestBlock = await client.getBlock()
             latestBlockNumber = latestBlock.number ?? null
             latestBlockTimestamp = latestBlock.timestamp ?? null
+
+            if (transaction.call) {
+                try {
+                    estimatedGas = await client.estimateGas({
+                        account: recipient,
+                        to: transaction.call.to,
+                        data: transaction.call.data,
+                        value: transaction.call.value,
+                    })
+                    estimatedGas = (estimatedGas * 120n) / 100n
+                } catch (gasError) {
+                    request.log.warn({ err: gasError }, 'failed to estimate gas')
+                }
+            }
         } catch (error) {
             request.log.warn({ err: error }, 'failed to load latest block metadata for quote')
         }
@@ -636,6 +651,7 @@ export const buildServer = async () => {
                         tokensToFlush: transaction.executor.tokensToFlush,
                     }
                     : null,
+                estimatedGas: estimatedGas?.toString(),
             },
         }
     })
