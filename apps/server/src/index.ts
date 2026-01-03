@@ -5,6 +5,7 @@ import rateLimit from '@fastify/rate-limit'
 import { z } from 'zod'
 import { isAddress } from 'viem'
 import type { Address } from 'viem'
+import { validateEnv } from './config/env'
 import { getChainConfig, SUPPORTED_CHAINS } from './config/chains'
 import {
     AEQUI_EXECUTOR_ADDRESS,
@@ -25,6 +26,7 @@ import { SwapBuilder } from '@aequi/core'
 import { formatAmountFromUnits, parseAmountToUnits } from './utils/units'
 import { DefaultChainClientProvider } from './services/clients/default-chain-client-provider'
 import { normalizeAddress } from './utils/trading'
+import { HealthService } from './services/health/health-service'
 import type { ChainConfig, PriceQuote, QuoteResult, RoutePreference, TokenMetadata } from './types'
 
 const chainClientProvider = new DefaultChainClientProvider()
@@ -42,6 +44,7 @@ const swapBuilder = new SwapBuilder({
     executorByChain: AEQUI_EXECUTOR_ADDRESS,
     interhopBufferBps: EXECUTOR_INTERHOP_BUFFER_BPS,
 })
+const healthService = new HealthService()
 
 const chainQuerySchema = z.object({
     chain: z.string().min(1),
@@ -137,7 +140,18 @@ export const buildServer = async () => {
         timeWindow: appConfig.rateLimit.window,
     })
 
-    app.get('/health', async () => ({ status: 'ok' }))
+    // Health check endpoints
+    app.get('/health', async (request, reply) => {
+        return healthService.handleHealthCheck(request, reply)
+    })
+
+    app.get('/health/live', async (request, reply) => {
+        return healthService.handleLivenessCheck(request, reply)
+    })
+
+    app.get('/health/ready', async (request, reply) => {
+        return healthService.handleReadinessCheck(request, reply)
+    })
 
     app.get('/exchange', async (request, reply) => {
         const parsed = chainQuerySchema.safeParse(request.query)
@@ -658,6 +672,16 @@ export const buildServer = async () => {
 }
 
 export const startServer = async () => {
+    // Validate environment variables on startup
+    try {
+        validateEnv()
+        console.log('✓ Environment variables validated')
+    } catch (error) {
+        console.error('❌ Environment validation failed:')
+        console.error((error as Error).message)
+        process.exit(1)
+    }
+
     console.log('Starting server with Native Token support...')
     const app = await buildServer()
     const port = appConfig.server.port
@@ -665,6 +689,7 @@ export const startServer = async () => {
 
     try {
         await app.listen({ port, host })
+        console.log(`✓ Server listening on ${host}:${port}`)
         return app
     } catch (error) {
         app.log.error(error)

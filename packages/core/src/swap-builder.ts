@@ -1,7 +1,7 @@
 import { encodeFunctionData } from 'viem'
 import type { Address, Hex } from 'viem'
 import { AEQUI_EXECUTOR_ABI, V2_ROUTER_ABI, V3_ROUTER_ABI, WETH_ABI } from './abi'
-import type { ChainConfig, ChainKey, PriceQuote, PriceSource, TokenMetadata } from './types'
+import type { ChainConfig, ChainKey, PriceQuote, TokenMetadata } from './types'
 
 interface ExecutorCallPlan {
   target: Address

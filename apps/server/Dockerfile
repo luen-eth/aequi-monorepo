@@ -9,6 +9,8 @@ FROM base AS deps
 # Copy root package files for workspace resolution
 COPY package.json turbo.json ./
 COPY apps/server/package.json ./apps/server/
+COPY packages/core/package.json ./packages/core/
+COPY packages/pricing/package.json ./packages/pricing/
 
 # Install dependencies
 RUN bun install
@@ -23,10 +25,13 @@ COPY --from=deps /app/node_modules ./node_modules
 # Copy source code
 COPY turbo.json ./
 COPY package.json ./
+COPY packages/core ./packages/core
+COPY packages/pricing ./packages/pricing
 COPY apps/server ./apps/server
 
-# Build the server (if needed, though bun can run TypeScript directly)
-# RUN bun run build --filter=server
+# Build shared packages first
+RUN cd packages/core && bun run build
+RUN cd packages/pricing && bun run build
 
 # Production stage
 FROM base AS runner
@@ -36,8 +41,12 @@ WORKDIR /app
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 fastify
 
-# Copy built application
+# Copy built application and packages
 COPY --from=builder --chown=fastify:nodejs /app/apps/server ./apps/server
+COPY --from=builder --chown=fastify:nodejs /app/packages/core/dist ./packages/core/dist
+COPY --from=builder --chown=fastify:nodejs /app/packages/core/package.json ./packages/core/package.json
+COPY --from=builder --chown=fastify:nodejs /app/packages/pricing/dist ./packages/pricing/dist
+COPY --from=builder --chown=fastify:nodejs /app/packages/pricing/package.json ./packages/pricing/package.json
 COPY --from=builder --chown=fastify:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=fastify:nodejs /app/package.json ./package.json
 

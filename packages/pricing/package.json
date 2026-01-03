@@ -3,8 +3,18 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "module": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit"
+  },
+  "files": [
+    "dist"
+  ],
   "dependencies": {
     "@aequi/core": "*",
     "@pancakeswap/swap-sdk-core": "^1.5.1",
@@ -13,6 +23,10 @@
     "@uniswap/v2-sdk": "^4.16.0",
     "@uniswap/v3-sdk": "^3.26.0",
     "viem": "^2.38.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "typescript": "^5.9.2"
   },
   "peerDependencies": {
     "typescript": "^5"

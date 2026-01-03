@@ -563,7 +563,7 @@ export class PoolDiscovery {
     try {
       const amountInCurrency = UniCurrencyAmount.fromRawAmount(tokenInInstance, amountIn.toString())
       // This call requires tick data if the swap crosses a tick
-      const quoted = pool.getOutputAmount(amountInCurrency)
+      const quoted = await pool.getOutputAmount(amountInCurrency)
       amountOutRaw = toRawAmount(quoted[0])
     } catch (error) {
       // If we fail here due to missing tick data, it means the swap is too large for the current tick liquidity.
