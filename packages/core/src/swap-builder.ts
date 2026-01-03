@@ -197,7 +197,6 @@ export class SwapBuilder {
     const calls: ExecutorCallPlan[] = []
     let availableAmount = quote.amountIn
 
-    // Handle Native Input (Wrap)
     if (useNativeInput) {
       if (!chain.wrappedNativeAddress) {
         throw new Error(`Wrapped native address not configured for chain ${chain.name}`)
@@ -218,14 +217,6 @@ export class SwapBuilder {
       }
       
       executorCalls.push(wrapCall)
-      // No need to add to calls[] for client-side simulation as this is internal to executor
-      // But wait, calls[] is for client simulation? No, calls[] in SwapTransaction is for...
-      // "calls: ExecutorCallPlan[]" seems to be a simplified view or maybe for direct execution?
-      // The interface says "calls: ExecutorCallPlan[]".
-      // Let's check how it's used. It seems to be just for info or maybe multi-call if not using executor contract?
-      // But here we ARE using executor contract.
-      
-      // We should add WETH to tokensToFlush so we can track it
       tokensToFlush.add(chain.wrappedNativeAddress)
     }
 
@@ -341,7 +332,6 @@ export class SwapBuilder {
       availableAmount = scaledHopExpectedOut
     }
 
-    // Handle Native Output (Unwrap)
     if (useNativeOutput) {
       if (!chain.wrappedNativeAddress) {
         throw new Error(`Wrapped native address not configured for chain ${chain.name}`)

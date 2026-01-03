@@ -511,7 +511,6 @@ export const buildServer = async () => {
             return { error: 'invalid_request', message: 'tokenA and tokenB must be different' }
         }
 
-        // Handle Native Tokens
         const isNativeAddress = (addr: string) => 
             addr.toLowerCase() === NATIVE_ADDRESS.toLowerCase()
 
@@ -520,13 +519,6 @@ export const buildServer = async () => {
 
         const effectiveTokenA = useNativeInput ? chain.wrappedNativeAddress.toLowerCase() as Address : tokenA
         const effectiveTokenB = useNativeOutput ? chain.wrappedNativeAddress.toLowerCase() as Address : tokenB
-
-        if (effectiveTokenA === effectiveTokenB) {
-             // Wrap/Unwrap only
-             // TODO: Implement direct wrap/unwrap logic if needed, or let it fail as "no route" for now
-             // For now, let's assume the user wants to swap, so if they ask for ETH -> WETH, it's a wrap.
-             // But the current quote service might not handle direct wrap/unwrap without a pool.
-        }
 
         const slippageInput = Number.isFinite(parsed.data.slippageBps) ? parsed.data.slippageBps! : undefined
         const slippageBps = slippageInput ?? 50
