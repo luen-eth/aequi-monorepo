@@ -42,7 +42,7 @@ const DEFAULTS = {
   executor: {
     interhopBufferBps: 3,
     quoteTtlSeconds: 15,
-    bscAddress: '0x03cbBc27784c64FC4A6f11eFe8D1C3b4Dee204EA' as Address,
+    bscAddress: '0xFdfD71de9A461afe6A10fa796A767676F5696655' as Address,
   },
   dex: {
     uniswapV2Factory: '0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6' as Address,

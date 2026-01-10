@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   useAccount,
+  useBalance,
   useChainId,
   useConnect,
   useDisconnect,
@@ -172,6 +173,16 @@ function App() {
     slippageBps: '50',
     version: 'auto',
     deadlineSeconds: '600',
+  })
+
+  // Fetch token A (sell token) balance
+  const { data: tokenABalance } = useBalance({
+    address: address,
+    token: quoteForm.tokenA?.address as `0x${string}` | undefined,
+    chainId: selectedChainId,
+    query: {
+      enabled: !!address && !!quoteForm.tokenA,
+    }
   })
 
   const [quoteResult, setQuoteResult] = useState<QuoteResponse | null>(null)
@@ -444,19 +455,25 @@ function App() {
         throw new Error('Input token metadata unavailable')
       }
 
-      // Step 2: Check allowance
-      const allowanceData = await refreshAllowance(inputToken, swapData.transaction.spender, { silent: true })
-      let needsApproval = true
+      // Step 2: Check allowance (skip for native tokens - they don't need approval)
+      const NATIVE_ADDRESS = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'
+      const isNativeInput = inputToken.toLowerCase() === NATIVE_ADDRESS.toLowerCase()
 
-      if (allowanceData) {
-        const entry = allowanceData.allowances.find((item) => item.token.toLowerCase() === inputToken.toLowerCase())
-        if (entry) {
-          try {
-            if (BigInt(entry.allowance) >= BigInt(swapData.transaction.amountIn)) {
-              needsApproval = false
+      let needsApproval = !isNativeInput // Native tokens don't need approval
+
+      if (!isNativeInput) {
+        const allowanceData = await refreshAllowance(inputToken, swapData.transaction.spender, { silent: true })
+
+        if (allowanceData) {
+          const entry = allowanceData.allowances.find((item) => item.token.toLowerCase() === inputToken.toLowerCase())
+          if (entry) {
+            try {
+              if (BigInt(entry.allowance) >= BigInt(swapData.transaction.amountIn)) {
+                needsApproval = false
+              }
+            } catch {
+              needsApproval = true
             }
-          } catch {
-            needsApproval = true
           }
         }
       }
@@ -504,11 +521,11 @@ function App() {
       if (!swapData.transaction.call) {
         throw new Error('Missing transaction payload')
       }
-      
-      const gasLimit = swapData.transaction.estimatedGas 
+
+      const gasLimit = swapData.transaction.estimatedGas
         ? BigInt(swapData.transaction.estimatedGas)
         : undefined
-      
+
       const swapTxHash = await sendTransactionAsync({
         chainId: selectedChainId,
         to: swapData.transaction.call.to as `0x${string}`,
@@ -659,6 +676,16 @@ function App() {
                         onChange={(e) => setQuoteForm(prev => ({ ...prev, amount: e.target.value }))}
                       />
                     </div>
+                    {quoteForm.tokenA && tokenABalance && (
+                      <div className="token-balance-row">
+                        <span className="token-balance">Balance: {parseFloat(tokenABalance.formatted).toFixed(4)} {quoteForm.tokenA.symbol}</span>
+                        <div className="amount-buttons">
+                          <button className="amount-btn" onClick={() => setQuoteForm(prev => ({ ...prev, amount: (parseFloat(tokenABalance.formatted) * 0.25).toString() }))}>25%</button>
+                          <button className="amount-btn" onClick={() => setQuoteForm(prev => ({ ...prev, amount: (parseFloat(tokenABalance.formatted) * 0.5).toString() }))}>50%</button>
+                          <button className="amount-btn" onClick={() => setQuoteForm(prev => ({ ...prev, amount: tokenABalance.formatted }))}>MAX</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="swap-toggle">

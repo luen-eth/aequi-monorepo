@@ -43,7 +43,7 @@ export class PoolDiscovery {
     private readonly tokenService: TokenService,
     private readonly clientProvider: ChainClientProvider,
     private readonly config: PoolDiscoveryConfig,
-  ) {}
+  ) { }
 
   async fetchDirectQuotes(
     chain: ChainConfig,
@@ -54,7 +54,7 @@ export class PoolDiscovery {
     client: PublicClient,
     allowedVersions: RouteHopVersion[],
   ): Promise<PriceQuote[]> {
-    console.log(`[PoolDiscovery] Fetching direct quotes for ${tokenIn.symbol} -> ${tokenOut.symbol} (Amount: ${amountIn})`)
+    console.log(`\x1b[36m[PoolDiscovery]\x1b[0m Fetching direct quotes for \x1b[33m${tokenIn.symbol}\x1b[0m → \x1b[33m${tokenOut.symbol}\x1b[0m`)
     const factoryCalls: any[] = []
     const dexMap: { type: 'v2' | 'v3'; dex: DexConfig; fee?: number; index: number }[] = []
 
@@ -249,7 +249,7 @@ export class PoolDiscovery {
 
             if (result && result.status === 'success') {
               const [amountOut, sqrtPriceX96After, initializedTicksCrossed, gasEstimate] = result.result as readonly [bigint, bigint, number, bigint]
-              
+
               if (amountOut > 0n) {
                 // Reconstruct quote from Quoter result
                 const executionPriceQ18 = computeExecutionPriceQ18(amountIn, amountOut, tokenIn.decimals, tokenOut.decimals)
@@ -266,7 +266,7 @@ export class PoolDiscovery {
                   candidate.snapshot.tick
                 )
                 const midPriceQ18 = computeMidPriceQ18FromPrice(candidate.dex.protocol, tokenInInstance as any, tokenOut.decimals, pool.token0Price)
-                
+
                 const priceImpactBps = computePriceImpactBps(
                   midPriceQ18,
                   amountIn,
@@ -306,8 +306,8 @@ export class PoolDiscovery {
                 })
               }
             } else {
-               // Log failure if needed, but allowFailure=true handles it
-               // console.warn(`[PoolDiscovery] Quoter failed for ${candidate.dex.id} pool ${candidate.snapshot.poolAddress}`)
+              // Log failure if needed, but allowFailure=true handles it
+              // console.warn(`[PoolDiscovery] Quoter failed for ${candidate.dex.id} pool ${candidate.snapshot.poolAddress}`)
             }
           }
         } catch (error) {
@@ -316,7 +316,7 @@ export class PoolDiscovery {
       }
     }
 
-    console.log(`[PoolDiscovery] Found ${quotes.length} direct quotes for ${tokenIn.symbol} -> ${tokenOut.symbol}`)
+    console.log(`\x1b[36m[PoolDiscovery]\x1b[0m Found \x1b[32m${quotes.length}\x1b[0m direct quotes for \x1b[33m${tokenIn.symbol}\x1b[0m → \x1b[33m${tokenOut.symbol}\x1b[0m`)
     return quotes
   }
 
@@ -329,7 +329,7 @@ export class PoolDiscovery {
     client: PublicClient,
     allowedVersions: RouteHopVersion[],
   ): Promise<PriceQuote[]> {
-    console.log(`[PoolDiscovery] Fetching multi-hop quotes for ${tokenIn.symbol} -> ${tokenOut.symbol}`)
+    console.log(`\x1b[36m[PoolDiscovery]\x1b[0m Fetching multi-hop quotes for \x1b[33m${tokenIn.symbol}\x1b[0m → \x1b[33m${tokenOut.symbol}\x1b[0m`)
     const intermediateAddresses = this.config.intermediateTokenAddresses[chain.key] ?? []
     const cache = new Map<string, TokenMetadata>()
     const results: PriceQuote[] = []
@@ -339,7 +339,7 @@ export class PoolDiscovery {
         continue
       }
 
-      console.log(`[PoolDiscovery] Checking intermediate: ${candidate}`)
+      console.log(`\x1b[2m[PoolDiscovery]\x1b[0m Checking intermediate: \x1b[35m${candidate.slice(0, 10)}...\x1b[0m`)
       const intermediate = await this.loadIntermediate(chain, candidate, cache)
 
       const legAQuotes = await this.fetchDirectQuotes(
@@ -536,7 +536,7 @@ export class PoolDiscovery {
 
     const tokenInInstance = new UniToken(tokenIn.chainId, tokenIn.address, tokenIn.decimals, tokenIn.symbol, tokenIn.name)
     const tokenOutInstance = new UniToken(tokenOut.chainId, tokenOut.address, tokenOut.decimals, tokenOut.symbol, tokenOut.name)
-    
+
     let pool: UniPool
     try {
       pool = new UniPool(

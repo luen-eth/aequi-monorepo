@@ -1,6 +1,6 @@
 import { encodeFunctionData } from 'viem'
 import type { Address, Hex } from 'viem'
-import { AEQUI_EXECUTOR_ABI, V2_ROUTER_ABI, V3_ROUTER_ABI, WETH_ABI } from './abi'
+import { AEQUI_EXECUTOR_ABI, V2_ROUTER_ABI, V3_ROUTER_ABI, V3_ROUTER02_ABI, WETH_ABI } from './abi'
 import type { ChainConfig, ChainKey, PriceQuote, TokenMetadata } from './types'
 
 interface ExecutorCallPlan {
@@ -42,7 +42,7 @@ export interface SwapTransaction {
   }
   executor?: {
     pulls: { token: Address; amount: bigint }[]
-    approvals: { token: Address; spender: Address; amount: bigint; revokeAfter: boolean }[]
+    approvals: { token: Address; spender: Address; amount: bigint }[]
     calls: { target: Address; value: bigint; data: Hex; injectToken: Address; injectOffset: bigint }[]
     tokensToFlush: Address[]
   }
@@ -91,7 +91,6 @@ export class SwapBuilder {
       throw new Error('Quote is missing source information')
     }
 
-    const uniqueDexes = new Set(params.quote.sources.map((source) => source.dexId))
     const deadlineSeconds = params.deadlineSeconds > 0 ? params.deadlineSeconds : 600
     const deadline = Math.floor(Date.now() / 1000) + deadlineSeconds
     const boundedSlippage = clampSlippage(params.slippageBps)
@@ -99,21 +98,8 @@ export class SwapBuilder {
       ? params.amountOutMin
       : this.applySlippage(params.quote.amountOut, boundedSlippage)
 
-    if (uniqueDexes.size === 1 && !params.useNativeInput && !params.useNativeOutput) {
-      const dexId = params.quote.sources[0]!.dexId
-      const dex = chain.dexes.find((entry) => entry.id === dexId)
-      if (!dex) {
-        throw new Error(`DEX ${dexId} is not configured for chain ${chain.name}`)
-      }
-      return this.buildDirectSwap(
-        dex,
-        params.quote,
-        params.recipient,
-        amountOutMinimum,
-        BigInt(deadline),
-      )
-    }
-
+    // ALWAYS use executor for all swaps - this ensures consistent behavior
+    // and allows proper token handling (pull, approve, swap, flush)
     return this.buildExecutorSwap(
       chain,
       params.quote,
@@ -187,7 +173,7 @@ export class SwapBuilder {
       pulls.push({ token: inputToken.address, amount: quote.amountIn })
     }
 
-    const approvals: { token: Address; spender: Address; amount: bigint; revokeAfter: boolean }[] = []
+    const approvals: { token: Address; spender: Address; amount: bigint }[] = []
     const executorCalls: { target: Address; value: bigint; data: Hex; injectToken: Address; injectOffset: bigint }[] = []
     const tokensToFlush = new Set<Address>()
     if (!useNativeInput) {
@@ -201,7 +187,7 @@ export class SwapBuilder {
       if (!chain.wrappedNativeAddress) {
         throw new Error(`Wrapped native address not configured for chain ${chain.name}`)
       }
-      
+
       const wrapCallData = encodeFunctionData({
         abi: WETH_ABI,
         functionName: 'deposit',
@@ -215,7 +201,7 @@ export class SwapBuilder {
         injectToken: '0x0000000000000000000000000000000000000000' as Address,
         injectOffset: 0n,
       }
-      
+
       executorCalls.push(wrapCall)
       tokensToFlush.add(chain.wrappedNativeAddress)
     }
@@ -278,30 +264,45 @@ export class SwapBuilder {
         isLastHop,
       )
 
+      // FIX: For intermediate hops (index > 0), use max approval since executor injects
+      // actual token balance which may differ from quoted hopAmountIn
+      const isIntermediateHop = index > 0
+      const approvalAmount = isIntermediateHop
+        ? BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff') // max uint256
+        : hopAmountIn // exact amount for first hop
+
       approvals.push({
         token: tokenIn.address,
         spender: dex.routerAddress,
-        amount: hopAmountIn,
-        revokeAfter: true,
+        amount: approvalAmount,
+        // revokeAfter removed - contract always revokes
       })
+
+      // Detect if this is Uniswap V3 (SwapRouter02) which uses different ABI
+      const isUniswapV3 = dex.protocol === 'uniswap' && hopVersion === 'v3'
 
       const swapCallData = hopVersion === 'v2'
         ? this.encodeV2SingleHopCall(tokenIn.address, tokenOut.address, hopAmountIn, hopMinOut, hopRecipient, deadline)
-        : this.encodeV3SingleHopCall(tokenIn.address, tokenOut.address, source.feeTier, hopAmountIn, hopMinOut, hopRecipient, deadline)
+        : this.encodeV3SingleHopCall(tokenIn.address, tokenOut.address, source.feeTier, hopAmountIn, hopMinOut, hopRecipient, deadline, isUniswapV3)
 
       // Dynamic Injection for multi-hop
       // For the first hop (index 0), we use the fixed amountIn.
       // For subsequent hops, we must inject the output of the previous hop (which is the current tokenIn balance).
       const isInjectionNeeded = index > 0
       const injectToken = isInjectionNeeded ? tokenIn.address : '0x0000000000000000000000000000000000000000' as Address
-      
+
       let injectOffset = 0n
       if (isInjectionNeeded) {
         if (hopVersion === 'v2') {
           // swapExactTokensForTokens(amountIn, ...) -> amountIn is at offset 4
           injectOffset = 4n
+        } else if (isUniswapV3) {
+          // SwapRouter02 exactInputSingle(params) -> params.amountIn at offset 4 + (4 * 32) = 132
+          // Struct: tokenIn, tokenOut, fee, recipient, amountIn (no deadline)
+          injectOffset = 132n
         } else {
-          // exactInputSingle(params) -> params.amountIn is at offset 4 + (5 * 32) = 164
+          // Standard V3 Router exactInputSingle(params) -> params.amountIn at offset 4 + (5 * 32) = 164
+          // Struct: tokenIn, tokenOut, fee, recipient, deadline, amountIn
           injectOffset = 164n
         }
       }
@@ -316,12 +317,12 @@ export class SwapBuilder {
 
       executorCalls.push(plannedCall)
       tokensToFlush.add(tokenIn.address)
-      
+
       // Only flush output token if it's coming back to executor (not going directly to recipient)
       if (hopRecipient === executorAddress) {
         tokensToFlush.add(tokenOut.address)
       }
-      
+
       calls.push({
         target: plannedCall.target,
         allowFailure: false,
@@ -497,11 +498,32 @@ export class SwapBuilder {
     amountOutMin: bigint,
     recipient: Address,
     deadline: bigint,
+    useRouter02: boolean = false,
   ): Hex {
     if (typeof feeTier !== 'number') {
       throw new Error('Missing fee tier for V3 hop')
     }
 
+    // SwapRouter02 (Uniswap V3 on BSC) uses different ABI without deadline in struct
+    if (useRouter02) {
+      return encodeFunctionData({
+        abi: V3_ROUTER02_ABI,
+        functionName: 'exactInputSingle',
+        args: [
+          {
+            tokenIn,
+            tokenOut,
+            fee: feeTier,
+            recipient,
+            amountIn,
+            amountOutMinimum: amountOutMin,
+            sqrtPriceLimitX96: 0n,
+          },
+        ],
+      })
+    }
+
+    // Standard V3 Router (PancakeSwap) with deadline in struct
     return encodeFunctionData({
       abi: V3_ROUTER_ABI,
       functionName: 'exactInputSingle',

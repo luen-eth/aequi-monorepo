@@ -6,6 +6,7 @@ import { compareQuotes } from './quote-math'
 import type { ChainClientProvider, QuoteResult } from './types'
 import type { TokenService } from './token-service'
 import { PoolDiscovery } from './pool-discovery'
+import { c, getCachedGasPrice, setCachedGasPrice, logCacheStats, logRouteRankings } from './logging'
 
 const resolveAllowedVersions = (preference: RoutePreference): RouteHopVersion[] => {
   if (preference === 'auto') {
@@ -29,7 +30,7 @@ export class PriceService {
     private readonly tokenService: TokenService,
     private readonly clientProvider: ChainClientProvider,
     private readonly poolDiscovery: PoolDiscovery,
-  ) {}
+  ) { }
 
   async getBestPrice(
     chain: ChainConfig,
@@ -64,12 +65,19 @@ export class PriceService {
     const allowedVersions = resolveAllowedVersions(preference)
     const client = await this.clientProvider.getClient(chain)
 
-    let gasPriceWei: bigint | null = null
-    try {
-      gasPriceWei = await client.getGasPrice()
-    } catch {
-      gasPriceWei = null
+    // Use cached gas price to reduce RPC calls
+    let gasPriceWei: bigint | null = getCachedGasPrice(chain.id)
+    if (!gasPriceWei) {
+      try {
+        gasPriceWei = await client.getGasPrice()
+        setCachedGasPrice(chain.id, gasPriceWei)
+      } catch {
+        gasPriceWei = null
+      }
     }
+
+    // Log cache stats periodically
+    logCacheStats()
 
     const [directQuotes, multiHopQuotes] = await Promise.all([
       this.poolDiscovery.fetchDirectQuotes(chain, tokenIn, tokenOut, amountIn, gasPriceWei, client, allowedVersions),
@@ -79,8 +87,12 @@ export class PriceService {
     const candidates = [...directQuotes, ...multiHopQuotes]
     const best = selectBestQuote(candidates)
     if (!best) {
+      console.log(`${c.yellow}[Quote]${c.reset} ${tokenIn.symbol} → ${tokenOut.symbol} | No routes found`)
       return null
     }
+
+    // Log detailed route rankings
+    logRouteRankings(candidates, best, tokenIn, tokenOut)
 
     const remaining = candidates.filter((quote) => quote !== best).sort(compareQuotes)
     if (remaining.length) {

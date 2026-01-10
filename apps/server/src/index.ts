@@ -153,6 +153,43 @@ export const buildServer = async () => {
         return healthService.handleReadinessCheck(request, reply)
     })
 
+    // Token list cache - refreshes every 10 seconds
+    let tokenListCache: { data: any; timestamp: number } | null = null
+    const TOKEN_LIST_CACHE_TTL_MS = 10_000 // 10 seconds
+
+    app.get('/tokens', async (request, reply) => {
+        try {
+            const now = Date.now()
+
+            // Return cached data if still valid
+            if (tokenListCache && (now - tokenListCache.timestamp) < TOKEN_LIST_CACHE_TTL_MS) {
+                return tokenListCache.data
+            }
+
+            // Load fresh token list from file
+            const tokensPath = new URL('./list/tokens.json', import.meta.url)
+            const tokenData = await import(tokensPath.href, { assert: { type: 'json' } })
+
+            // Transform to array format for frontend
+            const tokens = Object.values(tokenData.default.tokens || tokenData.tokens || {})
+
+            const response = {
+                tokens,
+                count: tokens.length,
+                cachedAt: new Date().toISOString(),
+            }
+
+            // Update cache
+            tokenListCache = { data: response, timestamp: now }
+
+            return response
+        } catch (error) {
+            console.error('[Token List] Error loading tokens:', error)
+            reply.status(500)
+            return { error: 'Failed to load token list' }
+        }
+    })
+
     app.get('/exchange', async (request, reply) => {
         const parsed = chainQuerySchema.safeParse(request.query)
         if (!parsed.success) {
@@ -525,7 +562,7 @@ export const buildServer = async () => {
             return { error: 'invalid_request', message: 'tokenA and tokenB must be different' }
         }
 
-        const isNativeAddress = (addr: string) => 
+        const isNativeAddress = (addr: string) =>
             addr.toLowerCase() === NATIVE_ADDRESS.toLowerCase()
 
         const useNativeInput = isNativeAddress(tokenA)

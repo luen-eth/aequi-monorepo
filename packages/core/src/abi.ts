@@ -60,6 +60,31 @@ export const V3_ROUTER_ABI = [
   },
 ] as const satisfies Abi
 
+// SwapRouter02 (Uniswap V3 on BSC) - deadline is NOT in the struct
+export const V3_ROUTER02_ABI = [
+  {
+    type: 'function',
+    name: 'exactInputSingle',
+    stateMutability: 'payable',
+    inputs: [
+      {
+        name: 'params',
+        type: 'tuple',
+        components: [
+          { name: 'tokenIn', type: 'address' },
+          { name: 'tokenOut', type: 'address' },
+          { name: 'fee', type: 'uint24' },
+          { name: 'recipient', type: 'address' },
+          { name: 'amountIn', type: 'uint256' },
+          { name: 'amountOutMinimum', type: 'uint256' },
+          { name: 'sqrtPriceLimitX96', type: 'uint160' },
+        ],
+      },
+    ],
+    outputs: [{ name: 'amountOut', type: 'uint256' }],
+  },
+] as const satisfies Abi
+
 export const V3_QUOTER_ABI = [
   {
     type: 'function',
@@ -108,7 +133,7 @@ export const AEQUI_EXECUTOR_ABI = [
           { name: 'token', type: 'address' },
           { name: 'spender', type: 'address' },
           { name: 'amount', type: 'uint256' },
-          { name: 'revokeAfter', type: 'bool' },
+          // Note: revokeAfter removed - contract always revokes approvals
         ],
       },
       {

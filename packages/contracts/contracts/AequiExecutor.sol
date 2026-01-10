@@ -15,6 +15,12 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     error ExecutionFailed(uint256 index, address target, bytes reason);
     error InvalidInjectionOffset(uint256 offset, uint256 length);
     error ZeroAmountInjection();
+    error TargetNotWhitelisted(address target);
+
+    // Router whitelist for security - only approved targets can be called
+    mapping(address => bool) public whitelistedTargets;
+
+    event TargetWhitelisted(address indexed target, bool status);
 
     struct TokenPull {
         address token;
@@ -25,7 +31,7 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         address token;
         address spender;
         uint256 amount;
-        bool revokeAfter;
+        // Note: revokeAfter removed - always revoke for security
     }
 
     struct Call {
@@ -36,7 +42,14 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 injectOffset; // The byte offset in 'data' to overwrite with the balance
     }
 
-    constructor(address initialOwner) Ownable(initialOwner) {}
+    constructor(address initialOwner) Ownable(initialOwner) {
+        // BSC DEX Routers - automatically whitelisted
+        whitelistedTargets[0x10ED43C718714eb63d5aA57B78B54704E256024E] = true; // PancakeSwap V2 Router
+        whitelistedTargets[0x1b81D678ffb9C0263b24A97847620C99d213eB14] = true; // PancakeSwap V3 Router
+        whitelistedTargets[0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24] = true; // Uniswap V2 Router (BSC)
+        whitelistedTargets[0xB971eF87ede563556b2ED4b1C0b0019111Dd85d2] = true; // Uniswap V3 Router (BSC)
+        whitelistedTargets[0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c] = true; // WBNB (for wrap/unwrap)
+    }
 
     receive() external payable {}
 
@@ -54,6 +67,24 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
 
     function rescueETH(address payable to, uint256 amount) external onlyOwner {
         Address.sendValue(to, amount);
+    }
+
+    /// @notice Add or remove a target from the whitelist
+    /// @param target The address to whitelist/unwhitelist
+    /// @param status True to whitelist, false to remove
+    function setWhitelistedTarget(address target, bool status) external onlyOwner {
+        whitelistedTargets[target] = status;
+        emit TargetWhitelisted(target, status);
+    }
+
+    /// @notice Batch whitelist multiple targets
+    /// @param targets Array of addresses to whitelist
+    function batchWhitelistTargets(address[] calldata targets) external onlyOwner {
+        for (uint256 i; i < targets.length;) {
+            whitelistedTargets[targets[i]] = true;
+            emit TargetWhitelisted(targets[i], true);
+            unchecked { ++i; }
+        }
     }
 
     function execute(
@@ -101,6 +132,9 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         for (uint256 i; i < calls.length;) {
             Call calldata c = calls[i];
             
+            // Security: Only allow calls to whitelisted targets
+            if (!whitelistedTargets[c.target]) revert TargetNotWhitelisted(c.target);
+            
             bytes memory data = c.data;
 
             if (c.injectToken != address(0)) {
@@ -135,9 +169,8 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     function _revokeApprovals(Approval[] calldata approvals) private {
         for (uint256 i; i < approvals.length;) {
             Approval calldata a = approvals[i];
-            if (a.revokeAfter) {
-                IERC20(a.token).forceApprove(a.spender, 0);
-            }
+            // Security: ALWAYS revoke approvals to prevent hijacking
+            IERC20(a.token).forceApprove(a.spender, 0);
             unchecked { ++i; }
         }
     }
@@ -150,15 +183,25 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     ) private {
         for (uint256 i; i < tokens.length;) {
             uint256 balanceAfter = IERC20(tokens[i]).balanceOf(address(this));
+            // Token Dust Protection: Only flush the delta (difference)
+            // This prevents dust attacks where attacker sends small amounts before tx
             if (balanceAfter > balancesBefore[i]) {
-                IERC20(tokens[i]).safeTransfer(recipient, balanceAfter - balancesBefore[i]);
+                uint256 delta = balanceAfter - balancesBefore[i];
+                // Only transfer if delta is meaningful (> 0)
+                if (delta > 0) {
+                    IERC20(tokens[i]).safeTransfer(recipient, delta);
+                }
             }
             unchecked { ++i; }
         }
 
+        // ETH Dust Protection: Same principle
         uint256 ethBalanceAfter = address(this).balance;
         if (ethBalanceAfter > ethBalanceBefore) {
-            Address.sendValue(payable(recipient), ethBalanceAfter - ethBalanceBefore);
+            uint256 ethDelta = ethBalanceAfter - ethBalanceBefore;
+            if (ethDelta > 0) {
+                Address.sendValue(payable(recipient), ethDelta);
+            }
         }
     }
 }
