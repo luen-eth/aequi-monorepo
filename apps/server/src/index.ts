@@ -510,11 +510,25 @@ export const buildServer = async () => {
         const baseResponse = formatPriceQuote(chain, quote, routePreference)
         const amountOutMinFormatted = formatAmountFromUnits(amountOutMin, tokenOut.decimals)
 
+        // Calculate fee (0.03% = 3 bps)
+        const feeAmount = (quote.amountOut * BigInt(appConfig.fee.bps)) / 10000n
+        const amountOutAfterFee = quote.amountOut - feeAmount
+        const feeAmountFormatted = formatAmountFromUnits(feeAmount, tokenOut.decimals)
+        const amountOutAfterFeeFormatted = formatAmountFromUnits(amountOutAfterFee, tokenOut.decimals)
+
         return {
             ...baseResponse,
             amountOutMin: amountOutMin.toString(),
             amountOutMinFormatted,
             slippageBps,
+            fee: {
+                bps: appConfig.fee.bps,
+                amount: feeAmount.toString(),
+                amountFormatted: feeAmountFormatted,
+                recipient: appConfig.fee.recipient,
+            },
+            amountOutAfterFee: amountOutAfterFee.toString(),
+            amountOutAfterFeeFormatted,
         }
     })
 
@@ -640,6 +654,12 @@ export const buildServer = async () => {
         const baseResponse = formatPriceQuote(chain, quote, routePreference)
         const amountOutMinFormatted = formatAmountFromUnits(amountOutMin, tokenOut.decimals)
 
+        // Calculate fee (0.03% = 3 bps)
+        const feeAmount = (quote.amountOut * BigInt(appConfig.fee.bps)) / 10000n
+        const amountOutAfterFee = quote.amountOut - feeAmount
+        const feeAmountFormatted = formatAmountFromUnits(feeAmount, tokenOut.decimals)
+        const amountOutAfterFeeFormatted = formatAmountFromUnits(amountOutAfterFee, tokenOut.decimals)
+
         return {
             ...baseResponse,
             amountOutMin: amountOutMin.toString(),
@@ -652,6 +672,14 @@ export const buildServer = async () => {
             quoteValidSeconds: SWAP_QUOTE_TTL_SECONDS,
             quoteBlockNumber: latestBlockNumber ? latestBlockNumber.toString() : null,
             quoteBlockTimestamp: latestBlockTimestamp ? Number(latestBlockTimestamp) : null,
+            fee: {
+                bps: appConfig.fee.bps,
+                amount: feeAmount.toString(),
+                amountFormatted: feeAmountFormatted,
+                recipient: appConfig.fee.recipient,
+            },
+            amountOutAfterFee: amountOutAfterFee.toString(),
+            amountOutAfterFeeFormatted,
             transaction: {
                 kind: transaction.kind,
                 dexId: transaction.dexId,
@@ -684,7 +712,6 @@ export const buildServer = async () => {
                             token: approval.token,
                             spender: approval.spender,
                             amount: approval.amount.toString(),
-                            revokeAfter: approval.revokeAfter,
                         })),
                         calls: transaction.executor.calls.map((call) => ({
                             target: call.target,

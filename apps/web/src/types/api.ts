@@ -65,11 +65,21 @@ export interface PriceResponse {
   sources: Array<{ dexId: string; amountOut: string }>
 }
 
+export interface FeeInfo {
+  bps: number
+  amount: string
+  amountFormatted: string
+  recipient: string
+}
+
 export interface QuoteResponse extends PriceResponse {
   amountOutMin: string
   amountOutMinFormatted: string
   slippageBps: number
   offers?: PriceResponse[]
+  fee?: FeeInfo
+  amountOutAfterFee?: string
+  amountOutAfterFeeFormatted?: string
 }
 
 export interface AllowanceEntry {

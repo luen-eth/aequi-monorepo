@@ -42,7 +42,7 @@ const DEFAULTS = {
   executor: {
     interhopBufferBps: 3,
     quoteTtlSeconds: 15,
-    bscAddress: '0x70aC53219E200B63dBf0218Cb0EC9567d091d26A' as Address,
+    bscAddress: '0x549a6f9138C7200A2EdE8FDA4633481252389Cb3' as Address,
   },
   dex: {
     uniswapV2Factory: '0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6' as Address,
@@ -80,6 +80,10 @@ export const appConfig = {
   },
   swap: {
     quoteTtlSeconds: parseIntWithDefault(process.env.SWAP_QUOTE_TTL_SECONDS, DEFAULTS.executor.quoteTtlSeconds, 1),
+  },
+  fee: {
+    bps: 3, // 0.03% = 3/10000
+    recipient: '0xB35BCCe9075d3115DB3B8ab70754B0FCf7ff744A' as Address,
   },
 } as const
 

@@ -249,8 +249,8 @@ export class SwapBuilder {
       }
 
       const isLastHop = index === quote.sources.length - 1
-      // If unwrapping at the end, the last hop must send tokens to the executor
-      const hopRecipient = (isLastHop && !useNativeOutput) ? recipient : executorAddress
+      // ALWAYS send tokens to executor so _flushDeltas can collect fees
+      const hopRecipient = executorAddress
       const hopExpectedOut = source.amountOut
       if (!hopExpectedOut || hopExpectedOut <= 0n) {
         throw new Error('Missing hop amountOut for executor construction')

@@ -61,6 +61,12 @@ export function SwapDetails({ quote, tokenA, tokenB, amountIn }: SwapDetailsProp
                     <span>Price Impact</span>
                     <span style={{ color: priceImpactColor }}>{priceImpact.toFixed(2)}%</span>
                 </div>
+                {quote.fee && (
+                    <div className="detail-row">
+                        <span>Platform Fee</span>
+                        <span>{(quote.fee.bps / 100).toFixed(2)}% ({quote.fee.amountFormatted} {tokenB.symbol})</span>
+                    </div>
+                )}
                 <div className="detail-row">
                     <span>Network Cost</span>
                     <div className="gas-cost">
@@ -76,6 +82,12 @@ export function SwapDetails({ quote, tokenA, tokenB, amountIn }: SwapDetailsProp
                     <span>Minimum Received</span>
                     <span>{(Number(quote.amountOutMin) / 10 ** tokenB.decimals).toFixed(6)} {tokenB.symbol}</span>
                 </div>
+                {quote.amountOutAfterFee && (
+                    <div className="detail-row">
+                        <span>You Receive (after fee)</span>
+                        <span style={{ color: 'var(--success-color)' }}>{quote.amountOutAfterFeeFormatted} {tokenB.symbol}</span>
+                    </div>
+                )}
                 <div className="detail-row">
                     <span>Route</span>
                     <span>{quote.routePreference.toUpperCase()}</span>

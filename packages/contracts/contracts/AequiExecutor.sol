@@ -17,10 +17,24 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     error ZeroAmountInjection();
     error TargetNotWhitelisted(address target);
 
+    // Fee configuration
+    address public feeRecipient;
+    uint256 public feeBps = 3; // 0.03% = 3/10000
+
     // Router whitelist for security - only approved targets can be called
     mapping(address => bool) public whitelistedTargets;
 
     event TargetWhitelisted(address indexed target, bool status);
+    event FeeRecipientUpdated(
+        address indexed oldRecipient,
+        address indexed newRecipient
+    );
+    event FeeBpsUpdated(uint256 oldBps, uint256 newBps);
+    event FeeCollected(
+        address indexed token,
+        address indexed recipient,
+        uint256 amount
+    );
 
     struct TokenPull {
         address token;
@@ -31,8 +45,8 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         address token;
         address spender;
         uint256 amount;
-        // Note: revokeAfter removed - always revoke for security
     }
+    // Note: revokeAfter removed - always revoke for security
 
     struct Call {
         address target;
@@ -61,7 +75,11 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         _unpause();
     }
 
-    function rescueFunds(address token, address to, uint256 amount) external onlyOwner {
+    function rescueFunds(
+        address token,
+        address to,
+        uint256 amount
+    ) external onlyOwner {
         IERC20(token).safeTransfer(to, amount);
     }
 
@@ -72,18 +90,42 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Add or remove a target from the whitelist
     /// @param target The address to whitelist/unwhitelist
     /// @param status True to whitelist, false to remove
-    function setWhitelistedTarget(address target, bool status) external onlyOwner {
+    function setWhitelistedTarget(
+        address target,
+        bool status
+    ) external onlyOwner {
         whitelistedTargets[target] = status;
         emit TargetWhitelisted(target, status);
     }
 
+    /// @notice Set the fee recipient address
+    /// @param _feeRecipient The address that will receive fees
+    function setFeeRecipient(address _feeRecipient) external onlyOwner {
+        address oldRecipient = feeRecipient;
+        feeRecipient = _feeRecipient;
+        emit FeeRecipientUpdated(oldRecipient, _feeRecipient);
+    }
+
+    /// @notice Set the fee basis points (max 100 = 1%)
+    /// @param _feeBps The fee in basis points (3 = 0.03%)
+    function setFeeBps(uint256 _feeBps) external onlyOwner {
+        require(_feeBps <= 100, "Fee too high"); // Max 1%
+        uint256 oldBps = feeBps;
+        feeBps = _feeBps;
+        emit FeeBpsUpdated(oldBps, _feeBps);
+    }
+
     /// @notice Batch whitelist multiple targets
     /// @param targets Array of addresses to whitelist
-    function batchWhitelistTargets(address[] calldata targets) external onlyOwner {
-        for (uint256 i; i < targets.length;) {
+    function batchWhitelistTargets(
+        address[] calldata targets
+    ) external onlyOwner {
+        for (uint256 i; i < targets.length; ) {
             whitelistedTargets[targets[i]] = true;
             emit TargetWhitelisted(targets[i], true);
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -92,7 +134,13 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         Approval[] calldata approvals,
         Call[] calldata calls,
         address[] calldata tokensToFlush
-    ) external payable nonReentrant whenNotPaused returns (bytes[] memory results) {
+    )
+        external
+        payable
+        nonReentrant
+        whenNotPaused
+        returns (bytes[] memory results)
+    {
         uint256 ethBalanceBefore = address(this).balance - msg.value;
         uint256[] memory tokenBalancesBefore = _snapshotBalances(tokensToFlush);
 
@@ -100,48 +148,71 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         _setApprovals(approvals);
         results = _performCalls(calls);
         _revokeApprovals(approvals);
-        _flushDeltas(msg.sender, tokensToFlush, tokenBalancesBefore, ethBalanceBefore);
+        _flushDeltas(
+            msg.sender,
+            tokensToFlush,
+            tokenBalancesBefore,
+            ethBalanceBefore
+        );
     }
 
-    function _snapshotBalances(address[] calldata tokens) private view returns (uint256[] memory balances) {
+    function _snapshotBalances(
+        address[] calldata tokens
+    ) private view returns (uint256[] memory balances) {
         balances = new uint256[](tokens.length);
-        for (uint256 i; i < tokens.length;) {
+        for (uint256 i; i < tokens.length; ) {
             balances[i] = IERC20(tokens[i]).balanceOf(address(this));
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
     }
 
     function _pullTokens(TokenPull[] calldata pulls) private {
-        for (uint256 i; i < pulls.length;) {
+        for (uint256 i; i < pulls.length; ) {
             TokenPull calldata p = pulls[i];
-            IERC20(p.token).safeTransferFrom(msg.sender, address(this), p.amount);
-            unchecked { ++i; }
+            IERC20(p.token).safeTransferFrom(
+                msg.sender,
+                address(this),
+                p.amount
+            );
+            unchecked {
+                ++i;
+            }
         }
     }
 
     function _setApprovals(Approval[] calldata approvals) private {
-        for (uint256 i; i < approvals.length;) {
+        for (uint256 i; i < approvals.length; ) {
             Approval calldata a = approvals[i];
             IERC20(a.token).forceApprove(a.spender, a.amount);
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
     }
 
-    function _performCalls(Call[] calldata calls) private returns (bytes[] memory results) {
+    function _performCalls(
+        Call[] calldata calls
+    ) private returns (bytes[] memory results) {
         results = new bytes[](calls.length);
-        for (uint256 i; i < calls.length;) {
+        for (uint256 i; i < calls.length; ) {
             Call calldata c = calls[i];
-            
+
             // Security: Only allow calls to whitelisted targets
-            if (!whitelistedTargets[c.target]) revert TargetNotWhitelisted(c.target);
-            
+            if (!whitelistedTargets[c.target])
+                revert TargetNotWhitelisted(c.target);
+
             bytes memory data = c.data;
 
             if (c.injectToken != address(0)) {
-                uint256 injectedAmount = IERC20(c.injectToken).balanceOf(address(this));
+                uint256 injectedAmount = IERC20(c.injectToken).balanceOf(
+                    address(this)
+                );
                 if (injectedAmount == 0) revert ZeroAmountInjection();
 
-                if (c.injectOffset + 32 > data.length) revert InvalidInjectionOffset(c.injectOffset, data.length);
+                if (c.injectOffset + 32 > data.length)
+                    revert InvalidInjectionOffset(c.injectOffset, data.length);
 
                 uint256 offset = c.injectOffset;
                 assembly {
@@ -149,8 +220,10 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
                 }
             }
 
-            (bool success, bytes memory ret) = c.target.call{value: c.value}(data);
-            
+            (bool success, bytes memory ret) = c.target.call{value: c.value}(
+                data
+            );
+
             if (!success) {
                 if (ret.length > 0) {
                     assembly {
@@ -162,16 +235,20 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
                 }
             }
             results[i] = ret;
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
     }
 
     function _revokeApprovals(Approval[] calldata approvals) private {
-        for (uint256 i; i < approvals.length;) {
+        for (uint256 i; i < approvals.length; ) {
             Approval calldata a = approvals[i];
             // Security: ALWAYS revoke approvals to prevent hijacking
             IERC20(a.token).forceApprove(a.spender, 0);
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -181,7 +258,7 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
         uint256[] memory balancesBefore,
         uint256 ethBalanceBefore
     ) private {
-        for (uint256 i; i < tokens.length;) {
+        for (uint256 i; i < tokens.length; ) {
             uint256 balanceAfter = IERC20(tokens[i]).balanceOf(address(this));
             // Token Dust Protection: Only flush the delta (difference)
             // This prevents dust attacks where attacker sends small amounts before tx
@@ -189,18 +266,52 @@ contract AequiExecutor is Ownable2Step, Pausable, ReentrancyGuard {
                 uint256 delta = balanceAfter - balancesBefore[i];
                 // Only transfer if delta is meaningful (> 0)
                 if (delta > 0) {
-                    IERC20(tokens[i]).safeTransfer(recipient, delta);
+                    // Calculate and collect fee
+                    uint256 feeAmount = 0;
+                    if (feeBps > 0 && feeRecipient != address(0)) {
+                        feeAmount = (delta * feeBps) / 10000;
+                        if (feeAmount > 0) {
+                            IERC20(tokens[i]).safeTransfer(
+                                feeRecipient,
+                                feeAmount
+                            );
+                            emit FeeCollected(
+                                tokens[i],
+                                feeRecipient,
+                                feeAmount
+                            );
+                        }
+                    }
+                    // Transfer remaining to user
+                    uint256 userAmount = delta - feeAmount;
+                    if (userAmount > 0) {
+                        IERC20(tokens[i]).safeTransfer(recipient, userAmount);
+                    }
                 }
             }
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
 
-        // ETH Dust Protection: Same principle
+        // ETH Dust Protection: Same principle with fee
         uint256 ethBalanceAfter = address(this).balance;
         if (ethBalanceAfter > ethBalanceBefore) {
             uint256 ethDelta = ethBalanceAfter - ethBalanceBefore;
             if (ethDelta > 0) {
-                Address.sendValue(payable(recipient), ethDelta);
+                // Calculate and collect ETH fee
+                uint256 ethFeeAmount = 0;
+                if (feeBps > 0 && feeRecipient != address(0)) {
+                    ethFeeAmount = (ethDelta * feeBps) / 10000;
+                    if (ethFeeAmount > 0) {
+                        Address.sendValue(payable(feeRecipient), ethFeeAmount);
+                    }
+                }
+                // Transfer remaining ETH to user
+                uint256 userEthAmount = ethDelta - ethFeeAmount;
+                if (userEthAmount > 0) {
+                    Address.sendValue(payable(recipient), userEthAmount);
+                }
             }
         }
     }
