@@ -19,7 +19,7 @@ import {
 } from './config/constants'
 import { appConfig } from './config/app-config'
 import { ExchangeService } from './services/exchange/exchange-service'
-import { TokenService, PriceService, PoolDiscovery } from '@aequi/pricing'
+import { TokenService, PriceService, PoolDiscovery, HistoricalPriceService } from '@aequi/pricing'
 import { QuoteService } from './services/quote/quote-service'
 import { AllowanceService } from './services/tokens/allowance-service'
 import { SwapBuilder } from '@aequi/core'
@@ -45,6 +45,7 @@ const swapBuilder = new SwapBuilder({
     interhopBufferBps: EXECUTOR_INTERHOP_BUFFER_BPS,
 })
 const healthService = new HealthService()
+const historicalPriceService = new HistoricalPriceService(tokenService, chainClientProvider)
 
 const chainQuerySchema = z.object({
     chain: z.string().min(1),
@@ -436,6 +437,119 @@ export const buildServer = async () => {
         }
 
         return formatPriceQuote(chain, quote, routePreference)
+    })
+
+    app.get('/price/history', async (request, reply) => {
+        const querySchema = chainQuerySchema.extend({
+            tokenA: z.string().refine((value) => isAddress(value, { strict: false }) || value.toLowerCase() === NATIVE_ADDRESS.toLowerCase(), 'Invalid tokenA address'),
+            tokenB: z.string().refine((value) => isAddress(value, { strict: false }) || value.toLowerCase() === NATIVE_ADDRESS.toLowerCase(), 'Invalid tokenB address'),
+            blockNumber: z.string().min(1, 'blockNumber is required'),
+            amount: z.string().optional(),
+            version: z.enum(['auto', 'v2', 'v3']).optional(),
+        })
+
+        const parsed = querySchema.safeParse(request.query)
+        if (!parsed.success) {
+            reply.status(400)
+            return { error: 'invalid_request', details: parsed.error.flatten() }
+        }
+
+        let chain
+        try {
+            chain = resolveChain(parsed.data.chain)
+        } catch (error) {
+            reply.status(400)
+            return { error: 'unsupported_chain', message: (error as Error).message }
+        }
+
+        let blockNumber: bigint
+        try {
+            blockNumber = BigInt(parsed.data.blockNumber)
+            if (blockNumber <= 0n) {
+                reply.status(400)
+                return { error: 'invalid_request', message: 'blockNumber must be a positive integer' }
+            }
+        } catch {
+            reply.status(400)
+            return { error: 'invalid_request', message: 'blockNumber must be a valid integer' }
+        }
+
+        const tokenA = normalizeAddress(parsed.data.tokenA).toLowerCase() as Address
+        const tokenB = normalizeAddress(parsed.data.tokenB).toLowerCase() as Address
+        const routePreference = resolveRoutePreference(parsed.data.version)
+
+        if (tokenA === tokenB) {
+            reply.status(400)
+            return { error: 'invalid_request', message: 'tokenA and tokenB must be different' }
+        }
+
+        const isNativeAddress = (addr: string) => addr.toLowerCase() === NATIVE_ADDRESS.toLowerCase()
+        const effectiveTokenA = isNativeAddress(tokenA) ? chain.wrappedNativeAddress.toLowerCase() as Address : tokenA
+        const effectiveTokenB = isNativeAddress(tokenB) ? chain.wrappedNativeAddress.toLowerCase() as Address : tokenB
+
+        if (effectiveTokenA === effectiveTokenB) {
+            reply.status(400)
+            return { error: 'invalid_request', message: 'tokenA and tokenB must be different' }
+        }
+
+        let tokenInMeta: TokenMetadata
+        let tokenOutMeta: TokenMetadata
+        try {
+            const metadata = await Promise.all([
+                tokenService.getTokenMetadata(chain, effectiveTokenA),
+                tokenService.getTokenMetadata(chain, effectiveTokenB),
+            ])
+            tokenInMeta = metadata[0]
+            tokenOutMeta = metadata[1]
+        } catch (error) {
+            reply.status(400)
+            return { error: 'token_metadata_error', message: (error as Error).message }
+        }
+
+        let amountIn: bigint
+        if (parsed.data.amount) {
+            try {
+                amountIn = parseAmountToUnits(parsed.data.amount, tokenInMeta.decimals)
+            } catch (error) {
+                reply.status(400)
+                return { error: 'invalid_amount', message: (error as Error).message }
+            }
+        } else {
+            // Default: 1 unit of the input token
+            amountIn = 10n ** BigInt(tokenInMeta.decimals)
+        }
+
+        let result
+        try {
+            result = await historicalPriceService.getPriceAtBlock(
+                chain,
+                tokenInMeta,
+                tokenOutMeta,
+                amountIn,
+                blockNumber,
+                routePreference,
+            )
+        } catch (error) {
+            const msg = (error as Error).message
+            if (msg.includes('missing trie node') || msg.includes('header not found')) {
+                reply.status(400)
+                return { error: 'archive_node_required', message: 'The RPC node does not support historical state queries for the requested block. An archive node is required.' }
+            }
+            reply.status(500)
+            return { error: 'rpc_error', message: msg }
+        }
+
+        if (!result) {
+            reply.status(404)
+            return { error: 'no_route', message: 'No on-chain route found for the requested pair at the specified block' }
+        }
+
+        const baseResponse = formatPriceQuote(chain, result.quote, routePreference)
+
+        return {
+            ...baseResponse,
+            blockNumber: result.blockNumber.toString(),
+        }
     })
 
     app.get('/quote', async (request, reply) => {
