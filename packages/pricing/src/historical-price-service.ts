@@ -81,202 +81,154 @@ export class HistoricalPriceService {
             `\x1b[36m[HistoricalPrice]\x1b[0m Fetching quotes at block \x1b[33m${blockNumber}\x1b[0m for \x1b[33m${tokenIn.symbol}\x1b[0m → \x1b[33m${tokenOut.symbol}\x1b[0m`,
         )
 
-        // Step 1: Find pool addresses via factory contracts (at historical block)
-        const factoryCalls: any[] = []
-        const dexMap: { type: 'v2' | 'v3'; dex: DexConfig; fee?: number; index: number }[] = []
+        // Build list of dex/pool lookups
+        const dexEntries: { type: 'v2' | 'v3'; dex: DexConfig; fee?: number }[] = []
 
-        chain.dexes.forEach((dex) => {
+        chain.dexes.forEach((dex: DexConfig) => {
             if (!allowedVersions.includes(dex.version)) return
 
             if (dex.version === 'v2') {
-                factoryCalls.push({
-                    address: dex.factoryAddress,
-                    abi: V2_FACTORY_ABI,
-                    functionName: 'getPair',
-                    args: [tokenIn.address, tokenOut.address],
-                })
-                dexMap.push({ type: 'v2', dex, index: factoryCalls.length - 1 })
+                dexEntries.push({ type: 'v2', dex })
             } else {
-                ; (dex.feeTiers ?? []).forEach((fee) => {
-                    factoryCalls.push({
-                        address: dex.factoryAddress,
-                        abi: V3_FACTORY_ABI,
-                        functionName: 'getPool',
-                        args: [tokenIn.address, tokenOut.address, fee],
-                    })
-                    dexMap.push({ type: 'v3', dex, fee, index: factoryCalls.length - 1 })
+                ; (dex.feeTiers ?? []).forEach((fee: number) => {
+                    dexEntries.push({ type: 'v3', dex, fee })
                 })
             }
         })
 
-        if (factoryCalls.length === 0) {
-            console.log(`\x1b[36m[HistoricalPrice]\x1b[0m No factory calls to make (dexes: ${chain.dexes.length}, allowed: ${allowedVersions.join(',')})`)
-            return []
-        }
+        if (dexEntries.length === 0) return []
 
-        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m Making ${factoryCalls.length} factory calls...`)
+        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m Making ${dexEntries.length} factory calls (direct readContract)...`)
 
-        const factoryResults = await client.multicall({
-            allowFailure: true,
-            contracts: factoryCalls,
-            blockNumber,
-        })
+        // Step 1: Find pool addresses via direct readContract calls (bypasses Multicall3)
+        const factoryResults = await Promise.allSettled(
+            dexEntries.map((entry) => {
+                if (entry.type === 'v2') {
+                    return client.readContract({
+                        address: entry.dex.factoryAddress,
+                        abi: V2_FACTORY_ABI,
+                        functionName: 'getPair',
+                        args: [tokenIn.address, tokenOut.address],
+                        blockNumber,
+                    })
+                } else {
+                    return client.readContract({
+                        address: entry.dex.factoryAddress,
+                        abi: V3_FACTORY_ABI,
+                        functionName: 'getPool',
+                        args: [tokenIn.address, tokenOut.address, entry.fee!],
+                        blockNumber,
+                    })
+                }
+            }),
+        )
 
         console.log(`\x1b[36m[HistoricalPrice]\x1b[0m Factory results:`, factoryResults.map((r, i) => ({
             index: i,
-            status: r?.status,
-            result: r?.status === 'success' ? r.result : (r as any)?.error?.message?.slice(0, 100),
+            status: r.status,
+            result: r.status === 'fulfilled' ? r.value : (r.reason as Error)?.message?.slice(0, 120),
         })))
 
-        // Step 2: Fetch pool data at the historical block
-        const poolDataCalls: any[] = []
-        const poolMap: {
+        // Step 2: For each valid pool, fetch on-chain state at historical block
+        const validPools: {
             type: 'v2' | 'v3'
             dex: DexConfig
             fee?: number
             poolAddress: Address
-            startIndex: number
         }[] = []
 
-        dexMap.forEach((item) => {
-            const result = factoryResults[item.index]
-            if (!result || result.status !== 'success' || !result.result || result.result === ZERO_ADDRESS)
-                return
-
-            const poolAddress = result.result as Address
-
-            if (item.type === 'v2') {
-                poolDataCalls.push(
-                    { address: poolAddress, abi: V2_PAIR_ABI, functionName: 'getReserves' },
-                    { address: poolAddress, abi: V2_PAIR_ABI, functionName: 'token0' },
-                )
-                poolMap.push({ ...item, poolAddress, startIndex: poolDataCalls.length - 2 })
-            } else {
-                poolDataCalls.push(
-                    { address: poolAddress, abi: V3_POOL_ABI, functionName: 'slot0' },
-                    { address: poolAddress, abi: V3_POOL_ABI, functionName: 'liquidity' },
-                    { address: poolAddress, abi: V3_POOL_ABI, functionName: 'token0' },
-                    { address: poolAddress, abi: V3_POOL_ABI, functionName: 'token1' },
-                )
-                poolMap.push({ ...item, poolAddress, startIndex: poolDataCalls.length - 4 })
-            }
+        factoryResults.forEach((result, i) => {
+            if (result.status !== 'fulfilled') return
+            const addr = result.value as Address
+            if (!addr || addr === ZERO_ADDRESS) return
+            validPools.push({ ...dexEntries[i], poolAddress: addr })
         })
 
-        if (poolDataCalls.length === 0) {
+        if (validPools.length === 0) {
             console.log(`\x1b[36m[HistoricalPrice]\x1b[0m No valid pools found from factory calls`)
             return []
         }
 
-        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m Found ${poolMap.length} pools, making ${poolDataCalls.length} data calls...`)
+        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m Found ${validPools.length} pools, fetching pool data...`)
 
-        const poolDataResults = await client.multicall({
-            allowFailure: true,
-            contracts: poolDataCalls,
-            blockNumber,
-        })
-
-        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m Pool data results:`, poolDataResults.map((r, i) => ({
-            index: i,
-            status: r?.status,
-            result: r?.status === 'success' ? (typeof r.result === 'bigint' ? r.result.toString() : r.result) : (r as any)?.error?.message?.slice(0, 100),
-        })))
-
-        // Step 3: Compute quotes from historical pool data
+        // Step 3: Fetch pool data & compute quotes (direct readContract calls)
         const quotes: PriceQuote[] = []
 
-        for (const item of poolMap) {
-            try {
+        const poolQuoteResults = await Promise.allSettled(
+            validPools.map(async (item) => {
                 if (item.type === 'v2') {
-                    const reservesRes = poolDataResults[item.startIndex]
-                    const token0Res = poolDataResults[item.startIndex + 1]
+                    const [reserves, token0Addr] = await Promise.all([
+                        client.readContract({
+                            address: item.poolAddress,
+                            abi: V2_PAIR_ABI,
+                            functionName: 'getReserves',
+                            blockNumber,
+                        }),
+                        client.readContract({
+                            address: item.poolAddress,
+                            abi: V2_PAIR_ABI,
+                            functionName: 'token0',
+                            blockNumber,
+                        }),
+                    ])
 
-                    if (
-                        reservesRes &&
-                        token0Res &&
-                        reservesRes.status === 'success' &&
-                        token0Res.status === 'success'
-                    ) {
-                        const [reserve0, reserve1] = reservesRes.result as readonly [bigint, bigint, number]
-                        const token0Address = normalizeAddress(token0Res.result as Address)
+                    const [reserve0, reserve1] = reserves as readonly [bigint, bigint, number]
+                    const token0Address = normalizeAddress(token0Addr as Address)
 
-                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V2 pool ${item.poolAddress}: token0=${token0Address}, reserve0=${reserve0.toString()}, reserve1=${reserve1.toString()}`)
+                    const reserveIn = sameAddress(token0Address, tokenIn.address) ? reserve0 : reserve1
+                    const reserveOut = sameAddress(token0Address, tokenIn.address) ? reserve1 : reserve0
 
-                        const reserveIn = sameAddress(token0Address, tokenIn.address)
-                            ? (reserve0 as bigint)
-                            : (reserve1 as bigint)
-                        const reserveOut = sameAddress(token0Address, tokenIn.address)
-                            ? (reserve1 as bigint)
-                            : (reserve0 as bigint)
-
-                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V2 reserveIn=${reserveIn.toString()}, reserveOut=${reserveOut.toString()}, amountIn=${amountIn.toString()}`)
-
-                        const quote = this.computeV2Quote(
-                            chain,
-                            item.dex,
-                            tokenIn,
-                            tokenOut,
-                            amountIn,
-                            item.poolAddress,
-                            reserveIn,
-                            reserveOut,
-                        )
-                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V2 quote result: ${quote ? 'SUCCESS' : 'NULL'}`)
-                        if (quote) quotes.push(quote)
-                    } else {
-                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V2 pool ${item.poolAddress}: data call failed - reserves: ${reservesRes?.status}, token0: ${token0Res?.status}`)
-                    }
+                    return this.computeV2Quote(
+                        chain, item.dex, tokenIn, tokenOut, amountIn, item.poolAddress, reserveIn, reserveOut,
+                    )
                 } else {
-                    const slot0Res = poolDataResults[item.startIndex]
-                    const liquidityRes = poolDataResults[item.startIndex + 1]
-                    const token0Res = poolDataResults[item.startIndex + 2]
-                    const token1Res = poolDataResults[item.startIndex + 3]
+                    const [slot0Data, liquidityValue, _token0, _token1] = await Promise.all([
+                        client.readContract({
+                            address: item.poolAddress,
+                            abi: V3_POOL_ABI,
+                            functionName: 'slot0',
+                            blockNumber,
+                        }),
+                        client.readContract({
+                            address: item.poolAddress,
+                            abi: V3_POOL_ABI,
+                            functionName: 'liquidity',
+                            blockNumber,
+                        }),
+                        client.readContract({
+                            address: item.poolAddress,
+                            abi: V3_POOL_ABI,
+                            functionName: 'token0',
+                            blockNumber,
+                        }),
+                        client.readContract({
+                            address: item.poolAddress,
+                            abi: V3_POOL_ABI,
+                            functionName: 'token1',
+                            blockNumber,
+                        }),
+                    ])
 
-                    if (
-                        slot0Res &&
-                        liquidityRes &&
-                        token0Res &&
-                        token1Res &&
-                        slot0Res.status === 'success' &&
-                        liquidityRes.status === 'success' &&
-                        token0Res.status === 'success' &&
-                        token1Res.status === 'success'
-                    ) {
-                        const slotData = slot0Res.result as readonly [
-                            bigint,
-                            number,
-                            number,
-                            number,
-                            number,
-                            number,
-                            boolean,
-                        ]
-                        const liquidityValue = liquidityRes.result as bigint
+                    const slotData = slot0Data as readonly [bigint, number, number, number, number, number, boolean]
+                    const liq = liquidityValue as bigint
 
-                        if (liquidityValue <= 0n) continue
+                    if (liq <= 0n) return null
 
-                        const quote = this.computeV3Quote(
-                            chain,
-                            item.dex,
-                            tokenIn,
-                            tokenOut,
-                            amountIn,
-                            item.poolAddress,
-                            slotData[0], // sqrtPriceX96
-                            liquidityValue,
-                            Number(slotData[1]), // tick
-                            item.fee!,
-                        )
-                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V3 quote result: ${quote ? 'SUCCESS' : 'NULL'}`)
-                        if (quote) quotes.push(quote)
-                    } else {
-                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V3 pool ${item.poolAddress}: data call failed - slot0: ${slot0Res?.status}, liquidity: ${liquidityRes?.status}, token0: ${token0Res?.status}, token1: ${token1Res?.status}`)
-                    }
+                    return this.computeV3Quote(
+                        chain, item.dex, tokenIn, tokenOut, amountIn, item.poolAddress,
+                        slotData[0], liq, Number(slotData[1]), item.fee!,
+                    )
                 }
-            } catch (error) {
-                console.warn(
-                    `[HistoricalPrice] Error processing pool ${item.poolAddress} (${item.type}):`,
-                    (error as Error).message,
-                )
+            }),
+        )
+
+        for (let i = 0; i < poolQuoteResults.length; i++) {
+            const r = poolQuoteResults[i]
+            if (r.status === 'fulfilled' && r.value) {
+                quotes.push(r.value)
+                console.log(`\x1b[36m[HistoricalPrice]\x1b[0m ${validPools[i].type.toUpperCase()} pool ${validPools[i].poolAddress} → quote SUCCESS`)
+            } else if (r.status === 'rejected') {
+                console.warn(`\x1b[36m[HistoricalPrice]\x1b[0m ${validPools[i].type.toUpperCase()} pool ${validPools[i].poolAddress} → FAILED: ${(r.reason as Error)?.message?.slice(0, 120)}`)
             }
         }
 
