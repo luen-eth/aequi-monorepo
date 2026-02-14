@@ -109,13 +109,24 @@ export class HistoricalPriceService {
             }
         })
 
-        if (factoryCalls.length === 0) return []
+        if (factoryCalls.length === 0) {
+            console.log(`\x1b[36m[HistoricalPrice]\x1b[0m No factory calls to make (dexes: ${chain.dexes.length}, allowed: ${allowedVersions.join(',')})`)
+            return []
+        }
+
+        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m Making ${factoryCalls.length} factory calls...`)
 
         const factoryResults = await client.multicall({
             allowFailure: true,
             contracts: factoryCalls,
             blockNumber,
         })
+
+        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m Factory results:`, factoryResults.map((r, i) => ({
+            index: i,
+            status: r?.status,
+            result: r?.status === 'success' ? r.result : (r as any)?.error?.message?.slice(0, 100),
+        })))
 
         // Step 2: Fetch pool data at the historical block
         const poolDataCalls: any[] = []
@@ -151,13 +162,24 @@ export class HistoricalPriceService {
             }
         })
 
-        if (poolDataCalls.length === 0) return []
+        if (poolDataCalls.length === 0) {
+            console.log(`\x1b[36m[HistoricalPrice]\x1b[0m No valid pools found from factory calls`)
+            return []
+        }
+
+        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m Found ${poolMap.length} pools, making ${poolDataCalls.length} data calls...`)
 
         const poolDataResults = await client.multicall({
             allowFailure: true,
             contracts: poolDataCalls,
             blockNumber,
         })
+
+        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m Pool data results:`, poolDataResults.map((r, i) => ({
+            index: i,
+            status: r?.status,
+            result: r?.status === 'success' ? (typeof r.result === 'bigint' ? r.result.toString() : r.result) : (r as any)?.error?.message?.slice(0, 100),
+        })))
 
         // Step 3: Compute quotes from historical pool data
         const quotes: PriceQuote[] = []
@@ -177,12 +199,16 @@ export class HistoricalPriceService {
                         const [reserve0, reserve1] = reservesRes.result as readonly [bigint, bigint, number]
                         const token0Address = normalizeAddress(token0Res.result as Address)
 
+                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V2 pool ${item.poolAddress}: token0=${token0Address}, reserve0=${reserve0.toString()}, reserve1=${reserve1.toString()}`)
+
                         const reserveIn = sameAddress(token0Address, tokenIn.address)
                             ? (reserve0 as bigint)
                             : (reserve1 as bigint)
                         const reserveOut = sameAddress(token0Address, tokenIn.address)
                             ? (reserve1 as bigint)
                             : (reserve0 as bigint)
+
+                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V2 reserveIn=${reserveIn.toString()}, reserveOut=${reserveOut.toString()}, amountIn=${amountIn.toString()}`)
 
                         const quote = this.computeV2Quote(
                             chain,
@@ -194,7 +220,10 @@ export class HistoricalPriceService {
                             reserveIn,
                             reserveOut,
                         )
+                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V2 quote result: ${quote ? 'SUCCESS' : 'NULL'}`)
                         if (quote) quotes.push(quote)
+                    } else {
+                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V2 pool ${item.poolAddress}: data call failed - reserves: ${reservesRes?.status}, token0: ${token0Res?.status}`)
                     }
                 } else {
                     const slot0Res = poolDataResults[item.startIndex]
@@ -237,7 +266,10 @@ export class HistoricalPriceService {
                             Number(slotData[1]), // tick
                             item.fee!,
                         )
+                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V3 quote result: ${quote ? 'SUCCESS' : 'NULL'}`)
                         if (quote) quotes.push(quote)
+                    } else {
+                        console.log(`\x1b[36m[HistoricalPrice]\x1b[0m V3 pool ${item.poolAddress}: data call failed - slot0: ${slot0Res?.status}, liquidity: ${liquidityRes?.status}, token0: ${token0Res?.status}, token1: ${token1Res?.status}`)
                     }
                 }
             } catch (error) {
