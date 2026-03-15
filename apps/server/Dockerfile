@@ -9,7 +9,9 @@ FROM base AS deps
 # Copy root package files for workspace resolution
 COPY package.json turbo.json bun.lock ./
 COPY apps/server/package.json ./apps/server/
+COPY apps/web/package.json ./apps/web/
 COPY packages/core/package.json ./packages/core/
+COPY packages/contracts/package.json ./packages/contracts/
 COPY packages/pricing/package.json ./packages/pricing/
 
 # Install dependencies
