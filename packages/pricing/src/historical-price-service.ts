@@ -9,6 +9,7 @@ import {
     V2_PAIR_ABI,
     V3_FACTORY_ABI,
     V3_POOL_ABI,
+    V3_QUOTER_ABI,
     ZERO_ADDRESS,
     normalizeAddress,
 } from './contracts'
@@ -215,11 +216,37 @@ export class HistoricalPriceService {
                     const token0Address = normalizeAddress(token0Addr as Address)
                     const token1Address = normalizeAddress(token1Addr as Address)
 
-                    if (liq <= 0n) return null
+                    let quoterAmountOut: bigint | null = null
+                    if (item.dex.quoterAddress) {
+                        try {
+                            const quoterResult = await client.readContract({
+                                address: item.dex.quoterAddress,
+                                abi: V3_QUOTER_ABI,
+                                functionName: 'quoteExactInputSingle',
+                                args: [{
+                                    tokenIn: tokenIn.address,
+                                    tokenOut: tokenOut.address,
+                                    amountIn,
+                                    fee: item.fee!,
+                                    sqrtPriceLimitX96: 0n,
+                                }],
+                                blockNumber,
+                            })
+                            const [quotedAmountOut] = quoterResult as readonly [bigint, bigint, number, bigint]
+                            if (quotedAmountOut > 0n) {
+                                quoterAmountOut = quotedAmountOut
+                            }
+                        } catch (error) {
+                            console.warn(
+                                `[HistoricalPrice] Quoter failed for ${item.dex.id} pool ${item.poolAddress}:`,
+                                (error as Error).message.slice(0, 120),
+                            )
+                        }
+                    }
 
                     return this.computeV3Quote(
                         chain, item.dex, tokenIn, tokenOut, amountIn, item.poolAddress,
-                        slotData[0], liq, item.fee!, token0Address, token1Address,
+                        slotData[0], liq, item.fee!, token0Address, token1Address, quoterAmountOut,
                     )
                 }
             }),
@@ -365,8 +392,9 @@ export class HistoricalPriceService {
         fee: number,
         token0Address: Address,
         token1Address: Address,
+        quoterAmountOut: bigint | null,
     ): PriceQuote | null {
-        if (liquidity <= 0n || sqrtPriceX96 <= 0n) {
+        if (sqrtPriceX96 <= 0n && (!quoterAmountOut || quoterAmountOut <= 0n)) {
             console.warn(`[HistoricalPrice] V3 pool ${poolAddress} skipped: liquidity=${liquidity} sqrtPriceX96=${sqrtPriceX96}`)
             return null
         }
@@ -381,26 +409,30 @@ export class HistoricalPriceService {
             return null
         }
 
-        const midPriceQ18 = computeV3MidPriceQ18FromSqrtPriceX96(
-            sqrtPriceX96,
-            tokenIn.decimals,
-            tokenOut.decimals,
-            tokenInIsToken0,
-        )
+        const midPriceQ18 = sqrtPriceX96 > 0n
+            ? computeV3MidPriceQ18FromSqrtPriceX96(
+                sqrtPriceX96,
+                tokenIn.decimals,
+                tokenOut.decimals,
+                tokenInIsToken0,
+            )
+            : 0n
 
-        if (midPriceQ18 <= 0n) {
-            console.warn(`[HistoricalPrice] V3 pool ${poolAddress} skipped: midPriceQ18=${midPriceQ18}`)
-            return null
+        let amountOutRaw = quoterAmountOut ?? 0n
+        if (amountOutRaw <= 0n) {
+            if (midPriceQ18 <= 0n) {
+                console.warn(`[HistoricalPrice] V3 pool ${poolAddress} skipped: midPriceQ18=${midPriceQ18}`)
+                return null
+            }
+            // Historical fallback: estimate amountOut from slot0 mid-price.
+            amountOutRaw = estimateAmountOutFromMidPrice(
+                midPriceQ18,
+                amountIn,
+                tokenIn.decimals,
+                tokenOut.decimals,
+                fee,
+            )
         }
-
-        // Historical V3 quotes are estimated from slot0 + fee (no quoter call at a past block).
-        const amountOutRaw = estimateAmountOutFromMidPrice(
-            midPriceQ18,
-            amountIn,
-            tokenIn.decimals,
-            tokenOut.decimals,
-            fee,
-        )
 
         if (amountOutRaw <= 0n) {
             console.warn(`[HistoricalPrice] V3 pool ${poolAddress} skipped: amountOut=${amountOutRaw} amountIn=${amountIn}`)
@@ -408,13 +440,16 @@ export class HistoricalPriceService {
         }
 
         const executionPriceQ18 = computeExecutionPriceQ18(amountIn, amountOutRaw, tokenIn.decimals, tokenOut.decimals)
-        const priceImpactBps = computePriceImpactBps(
-            midPriceQ18,
-            amountIn,
-            amountOutRaw,
-            tokenIn.decimals,
-            tokenOut.decimals,
-        )
+        const effectiveMidPriceQ18 = midPriceQ18 > 0n ? midPriceQ18 : executionPriceQ18
+        const priceImpactBps = midPriceQ18 > 0n
+            ? computePriceImpactBps(
+                midPriceQ18,
+                amountIn,
+                amountOutRaw,
+                tokenIn.decimals,
+                tokenOut.decimals,
+            )
+            : 0
 
         const hopVersions: RouteHopVersion[] = ['v3']
         const estimatedGasUnits = estimateGasForRoute(hopVersions)
@@ -425,7 +460,7 @@ export class HistoricalPriceService {
             amountOut: amountOutRaw,
             priceQ18: executionPriceQ18,
             executionPriceQ18,
-            midPriceQ18,
+            midPriceQ18: effectiveMidPriceQ18,
             priceImpactBps,
             path: [tokenIn, tokenOut],
             routeAddresses: [tokenIn.address, tokenOut.address],

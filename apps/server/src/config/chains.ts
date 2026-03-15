@@ -69,7 +69,7 @@ export const CHAIN_CONFIGS: Record<ChainKey, ChainConfig> = {
                 factoryAddress: '0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865',
                 routerAddress: '0x1b81D678ffb9C0263b24A97847620C99d213eB14',
                 quoterAddress: '0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997',
-                feeTiers: [PancakeFeeAmount.LOWEST, PancakeFeeAmount.LOW, PancakeFeeAmount.MEDIUM],
+                feeTiers: [PancakeFeeAmount.LOWEST, PancakeFeeAmount.LOW, PancakeFeeAmount.MEDIUM, PancakeFeeAmount.HIGH],
             },
         ],
     },
