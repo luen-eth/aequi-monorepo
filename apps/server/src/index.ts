@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { readFileSync } from 'node:fs'
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import rateLimit from '@fastify/rate-limit'
@@ -27,11 +28,67 @@ import { formatAmountFromUnits, parseAmountToUnits } from './utils/units'
 import { DefaultChainClientProvider } from './services/clients/default-chain-client-provider'
 import { normalizeAddress } from './utils/trading'
 import { HealthService } from './services/health/health-service'
-import type { ChainConfig, PriceQuote, QuoteResult, RoutePreference, TokenMetadata } from './types'
+import type { ChainConfig, ChainKey, PriceQuote, QuoteResult, RoutePreference, TokenMetadata } from './types'
+
+interface StaticTokenListEntry {
+    chainId: number
+    address: string
+    symbol?: string
+    name?: string
+    decimals: number
+}
+
+interface StaticTokenListFile {
+    tokens?: Record<string, StaticTokenListEntry>
+}
+
+const buildPreloadTokens = (): Partial<Record<ChainKey, Array<Omit<TokenMetadata, 'totalSupply'>>>> => {
+    const merged: Partial<Record<ChainKey, Array<Omit<TokenMetadata, 'totalSupply'>>>> = {
+        ethereum: [...(INTERMEDIATE_TOKENS.ethereum ?? [])],
+        bsc: [...(INTERMEDIATE_TOKENS.bsc ?? [])],
+    }
+
+    try {
+        const tokensPath = new URL('./list/tokens.json', import.meta.url)
+        const content = readFileSync(tokensPath, 'utf8')
+        const parsed = JSON.parse(content) as StaticTokenListFile
+
+        Object.values(parsed.tokens ?? {}).forEach((token) => {
+            const chainKey: ChainKey | null =
+                token.chainId === 1 ? 'ethereum'
+                    : token.chainId === 56 ? 'bsc'
+                        : null
+
+            if (!chainKey) return
+            if (!Number.isFinite(token.decimals) || token.decimals < 0) return
+            if (!isAddress(token.address, { strict: false })) return
+
+            const list = merged[chainKey] ?? (merged[chainKey] = [])
+            const normalized = token.address.toLowerCase()
+            if (list.some((entry) => entry.address.toLowerCase() === normalized)) {
+                return
+            }
+
+            list.push({
+                chainId: token.chainId,
+                address: normalized as Address,
+                symbol: token.symbol ?? 'UNKNOWN',
+                name: token.name ?? token.symbol ?? 'UNKNOWN',
+                decimals: token.decimals,
+            })
+        })
+    } catch (error) {
+        console.warn('[token-preload] Failed to load static token list:', (error as Error).message)
+    }
+
+    return merged
+}
+
+const PRELOADED_TOKENS = buildPreloadTokens()
 
 const chainClientProvider = new DefaultChainClientProvider()
 const exchangeService = new ExchangeService()
-const tokenService = new TokenService(chainClientProvider, { preloadTokens: INTERMEDIATE_TOKENS })
+const tokenService = new TokenService(chainClientProvider, { preloadTokens: PRELOADED_TOKENS })
 const poolDiscovery = new PoolDiscovery(tokenService, chainClientProvider, {
     intermediateTokenAddresses: INTERMEDIATE_TOKEN_ADDRESSES,
     minV2ReserveThreshold: MIN_V2_RESERVE_THRESHOLD,

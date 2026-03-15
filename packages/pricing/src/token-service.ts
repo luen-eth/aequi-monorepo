@@ -63,7 +63,8 @@ export class TokenService {
           const key = this.cacheKey(token.chainId, checksum)
           this.cache.set(key, {
             value: { ...token, address: checksum, totalSupply: null },
-            expiresAt: now() + this.ttlMs,
+            // Preloaded metadata should act as long-lived fallback when on-chain reads fail.
+            expiresAt: Number.POSITIVE_INFINITY,
           })
         } catch (error) {
           console.warn(`[token-service] skipping invalid preload ${token.address}: ${(error as Error).message}`)
