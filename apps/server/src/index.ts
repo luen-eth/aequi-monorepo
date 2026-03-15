@@ -540,8 +540,35 @@ export const buildServer = async () => {
         }
 
         if (!result) {
-            reply.status(404)
-            return { error: 'no_route', message: 'No on-chain route found for the requested pair at the specified block' }
+            const liveQuote = await priceService.getBestQuoteForTokens(
+                chain,
+                tokenInMeta,
+                tokenOutMeta,
+                amountIn,
+                routePreference,
+            )
+
+            if (!liveQuote) {
+                reply.status(404)
+                return { error: 'no_route', message: 'No on-chain route found for the requested pair at the specified block' }
+            }
+
+            let latestBlockNumber: bigint | null = null
+            try {
+                const client = await chainClientProvider.getClient(chain)
+                latestBlockNumber = await client.getBlockNumber()
+            } catch {
+                latestBlockNumber = null
+            }
+
+            const fallbackResponse = formatPriceQuote(chain, liveQuote, routePreference)
+            return {
+                ...fallbackResponse,
+                blockNumber: (latestBlockNumber ?? blockNumber).toString(),
+                requestedBlockNumber: blockNumber.toString(),
+                approximate: true,
+                warning: 'Historical state unavailable from RPC at requested block; returned latest quote instead.',
+            }
         }
 
         const baseResponse = formatPriceQuote(chain, result.quote, routePreference)
