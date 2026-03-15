@@ -7,13 +7,15 @@ WORKDIR /app
 # Install dependencies stage
 FROM base AS deps
 # Copy root package files for workspace resolution
-COPY package.json turbo.json ./
+COPY package.json bun.lock turbo.json ./
 COPY apps/server/package.json ./apps/server/
+COPY apps/web/package.json ./apps/web/
 COPY packages/core/package.json ./packages/core/
 COPY packages/pricing/package.json ./packages/pricing/
+COPY packages/contracts/package.json ./packages/contracts/
 
 # Install dependencies
-RUN bun install
+RUN bun install --frozen-lockfile
 
 # Build stage
 FROM base AS builder
