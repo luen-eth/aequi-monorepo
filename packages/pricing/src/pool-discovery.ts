@@ -1,9 +1,7 @@
 import { CurrencyAmount as CakeCurrencyAmount, Token as CakeToken } from '@pancakeswap/swap-sdk-core'
 import { Pair as CakePair } from '@pancakeswap/v2-sdk'
-import { Pool as CakePool } from '@pancakeswap/v3-sdk'
 import { CurrencyAmount as UniCurrencyAmount, Token as UniToken } from '@uniswap/sdk-core'
 import { Pair as UniPair } from '@uniswap/v2-sdk'
-import { Pool as UniPool } from '@uniswap/v3-sdk'
 import type { Address, PublicClient } from 'viem'
 import type { ChainConfig, DexConfig, PriceQuote, RouteHopVersion, TokenMetadata } from '@aequi/core'
 import { V2_FACTORY_ABI, V2_PAIR_ABI, V3_FACTORY_ABI, V3_POOL_ABI, V3_QUOTER_ABI, ZERO_ADDRESS, normalizeAddress } from './contracts'
@@ -14,6 +12,7 @@ import {
   computePriceImpactBps,
   estimateAmountOutFromMidPrice,
   estimateGasForRoute,
+  computeV3MidPriceQ18FromSqrtPriceX96,
   toRawAmount,
 } from './quote-math'
 import { selectBestQuote } from './route-planner'
@@ -245,7 +244,7 @@ export class PoolDiscovery {
           for (let i = 0; i < quoterCandidates.length; i++) {
             const candidate = quoterCandidates[i]!
             const result = quoterResults[i]
-            const midPriceQ18 = this.computeV3MidPriceQ18(candidate.dex, tokenIn, tokenOut, candidate.snapshot)
+            const midPriceQ18 = this.computeV3MidPriceQ18(tokenIn, tokenOut, candidate.snapshot)
             if (midPriceQ18 <= 0n) {
               continue
             }
@@ -334,7 +333,6 @@ export class PoolDiscovery {
   }
 
   private computeV3MidPriceQ18(
-    dex: DexConfig,
     tokenIn: TokenMetadata,
     tokenOut: TokenMetadata,
     snapshot: V3PoolSnapshot,
@@ -348,43 +346,12 @@ export class PoolDiscovery {
       return 0n
     }
 
-    const token0 = tokenInIsToken0 ? tokenIn : tokenOut
-    const token1 = tokenInIsToken1 ? tokenIn : tokenOut
-
-    try {
-      if (dex.protocol === 'pancakeswap') {
-        const token0Instance = new CakeToken(token0.chainId, token0.address, token0.decimals, token0.symbol, token0.name)
-        const token1Instance = new CakeToken(token1.chainId, token1.address, token1.decimals, token1.symbol, token1.name)
-        const pool = new CakePool(
-          token0Instance,
-          token1Instance,
-          snapshot.fee,
-          snapshot.sqrtPriceX96.toString(),
-          snapshot.liquidity.toString(),
-          snapshot.tick,
-        )
-        const tokenInInstance = tokenInIsToken0 ? token0Instance : token1Instance
-        const price = tokenInIsToken0 ? pool.token0Price : pool.token1Price
-        return computeMidPriceQ18FromPrice(dex.protocol, tokenInInstance as any, tokenOut.decimals, price)
-      }
-
-      const token0Instance = new UniToken(token0.chainId, token0.address, token0.decimals, token0.symbol, token0.name)
-      const token1Instance = new UniToken(token1.chainId, token1.address, token1.decimals, token1.symbol, token1.name)
-      const pool = new UniPool(
-        token0Instance,
-        token1Instance,
-        snapshot.fee,
-        snapshot.sqrtPriceX96.toString(),
-        snapshot.liquidity.toString(),
-        snapshot.tick,
-      )
-      const tokenInInstance = tokenInIsToken0 ? token0Instance : token1Instance
-      const price = tokenInIsToken0 ? pool.token0Price : pool.token1Price
-      return computeMidPriceQ18FromPrice(dex.protocol, tokenInInstance as any, tokenOut.decimals, price)
-    } catch (error) {
-      console.warn(`[PoolDiscovery] Failed to build V3 pool state for ${dex.id}:`, (error as Error).message)
-      return 0n
-    }
+    return computeV3MidPriceQ18FromSqrtPriceX96(
+      snapshot.sqrtPriceX96,
+      tokenIn.decimals,
+      tokenOut.decimals,
+      tokenInIsToken0,
+    )
   }
 
   async fetchMultiHopQuotes(
@@ -581,102 +548,6 @@ export class PoolDiscovery {
         },
       ],
       liquidityScore,
-      hopVersions,
-      estimatedGasUnits,
-      estimatedGasCostWei,
-      gasPriceWei,
-    }
-  }
-
-  private async computeV3Quote(
-    chain: ChainConfig,
-    dex: DexConfig,
-    tokenIn: TokenMetadata,
-    tokenOut: TokenMetadata,
-    amountIn: bigint,
-    gasPriceWei: bigint | null,
-    snapshot: V3PoolSnapshot,
-  ): Promise<PriceQuote | null> {
-    if (snapshot.liquidity < this.config.minV3LiquidityThreshold) {
-      return null
-    }
-
-    const tokenInInstance = new UniToken(tokenIn.chainId, tokenIn.address, tokenIn.decimals, tokenIn.symbol, tokenIn.name)
-    const tokenOutInstance = new UniToken(tokenOut.chainId, tokenOut.address, tokenOut.decimals, tokenOut.symbol, tokenOut.name)
-
-    let pool: UniPool
-    try {
-      pool = new UniPool(
-        tokenInInstance,
-        tokenOutInstance,
-        snapshot.fee,
-        snapshot.sqrtPriceX96.toString(),
-        snapshot.liquidity.toString(),
-        snapshot.tick,
-        // Provide a dummy tick data provider to avoid "No tick data provider was given" error
-        // This is a workaround for simple quotes that don't cross ticks.
-        // For accurate cross-tick quotes, we should use the Quoter contract.
-        // But for now, let's try to suppress the error if the swap is small enough.
-        // Actually, the SDK throws if provider is missing even if not needed? No, only if needed.
-        // If it throws, it means we ARE crossing a tick.
-        // So we must catch the error.
-      )
-    } catch (error) {
-      console.warn(`[PoolDiscovery] Failed to create V3 pool instance for ${tokenIn.symbol}->${tokenOut.symbol}:`, (error as Error).message)
-      return null
-    }
-
-    let amountOutRaw: bigint
-    try {
-      const amountInCurrency = UniCurrencyAmount.fromRawAmount(tokenInInstance, amountIn.toString())
-      // This call requires tick data if the swap crosses a tick
-      const quoted = await pool.getOutputAmount(amountInCurrency)
-      amountOutRaw = toRawAmount(quoted[0])
-    } catch (error) {
-      // If we fail here due to missing tick data, it means the swap is too large for the current tick liquidity.
-      // We log it and return null, effectively skipping this pool for this amount.
-      console.warn(`[PoolDiscovery] V3 quote failed for ${tokenIn.symbol}->${tokenOut.symbol} (likely crossing tick):`, (error as Error).message)
-      return null
-    }
-
-    if (amountOutRaw <= 0n) {
-      return null
-    }
-
-    const midPriceQ18 = computeMidPriceQ18FromPrice(dex.protocol, tokenInInstance as any, tokenOut.decimals, pool.token0Price)
-    const executionPriceQ18 = computeExecutionPriceQ18(amountIn, amountOutRaw, tokenIn.decimals, tokenOut.decimals)
-    const priceImpactBps = computePriceImpactBps(
-      midPriceQ18,
-      amountIn,
-      amountOutRaw,
-      tokenIn.decimals,
-      tokenOut.decimals,
-    )
-
-    const hopVersions: RouteHopVersion[] = ['v3']
-    const estimatedGasUnits = estimateGasForRoute(hopVersions)
-    const estimatedGasCostWei = gasPriceWei ? gasPriceWei * estimatedGasUnits : null
-
-    return {
-      chain: chain.key,
-      amountIn,
-      amountOut: amountOutRaw,
-      priceQ18: executionPriceQ18,
-      executionPriceQ18,
-      midPriceQ18,
-      priceImpactBps,
-      path: [tokenIn, tokenOut],
-      routeAddresses: [tokenIn.address, tokenOut.address],
-      sources: [
-        {
-          dexId: dex.id,
-          poolAddress: snapshot.poolAddress,
-          feeTier: snapshot.fee,
-          amountIn,
-          amountOut: amountOutRaw,
-        },
-      ],
-      liquidityScore: snapshot.liquidity,
       hopVersions,
       estimatedGasUnits,
       estimatedGasCostWei,

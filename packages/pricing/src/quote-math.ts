@@ -2,6 +2,7 @@ import { CurrencyAmount as CakeCurrencyAmount, Token as CakeToken } from '@panca
 import { CurrencyAmount as UniCurrencyAmount, Token as UniToken } from '@uniswap/sdk-core'
 import type { DexConfig, PriceQuote, RouteHopVersion } from '@aequi/core'
 import { Q18, multiplyQ18 } from './math'
+const Q192 = 2n ** 192n
 
 const pow10 = (value: number) => {
   if (value < 0) return 1n
@@ -143,6 +144,42 @@ export const estimateAmountOutFromMidPrice = (
 
   const adjustedAmountIn = amountIn - (amountIn * BigInt(fee)) / 1_000_000n
   return applyPriceQ18(midPriceQ18, adjustedAmountIn, inDecimals, outDecimals)
+}
+
+export const computeV3MidPriceQ18FromSqrtPriceX96 = (
+  sqrtPriceX96: bigint,
+  tokenInDecimals: number,
+  tokenOutDecimals: number,
+  tokenInIsToken0: boolean,
+): bigint => {
+  if (sqrtPriceX96 <= 0n) {
+    return 0n
+  }
+
+  const ratioX192 = sqrtPriceX96 * sqrtPriceX96
+  if (ratioX192 <= 0n) {
+    return 0n
+  }
+
+  const inFactor = pow10(tokenInDecimals)
+  const outFactor = pow10(tokenOutDecimals)
+  if (inFactor === 0n || outFactor === 0n) {
+    return 0n
+  }
+
+  if (tokenInIsToken0) {
+    const denominator = Q192 * outFactor
+    if (denominator === 0n) {
+      return 0n
+    }
+    return (ratioX192 * Q18 * inFactor) / denominator
+  }
+
+  const denominator = ratioX192 * outFactor
+  if (denominator === 0n) {
+    return 0n
+  }
+  return (Q192 * Q18 * inFactor) / denominator
 }
 
 export const compareQuotes = (a: PriceQuote, b: PriceQuote) => {

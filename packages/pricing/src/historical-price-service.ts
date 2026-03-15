@@ -1,9 +1,7 @@
 import { CurrencyAmount as CakeCurrencyAmount, Token as CakeToken } from '@pancakeswap/swap-sdk-core'
 import { Pair as CakePair } from '@pancakeswap/v2-sdk'
-import { Pool as CakePool } from '@pancakeswap/v3-sdk'
 import { CurrencyAmount as UniCurrencyAmount, Token as UniToken } from '@uniswap/sdk-core'
 import { Pair as UniPair } from '@uniswap/v2-sdk'
-import { Pool as UniPool } from '@uniswap/v3-sdk'
 import type { Address, PublicClient } from 'viem'
 import type { ChainConfig, DexConfig, PriceQuote, RouteHopVersion, TokenMetadata } from '@aequi/core'
 import {
@@ -18,6 +16,7 @@ import { minBigInt, scaleToQ18 } from './math'
 import {
     computeExecutionPriceQ18,
     computeMidPriceQ18FromPrice,
+    computeV3MidPriceQ18FromSqrtPriceX96,
     computePriceImpactBps,
     estimateAmountOutFromMidPrice,
     estimateGasForRoute,
@@ -220,7 +219,7 @@ export class HistoricalPriceService {
 
                     return this.computeV3Quote(
                         chain, item.dex, tokenIn, tokenOut, amountIn, item.poolAddress,
-                        slotData[0], liq, Number(slotData[1]), item.fee!, token0Address, token1Address,
+                        slotData[0], liq, item.fee!, token0Address, token1Address,
                     )
                 }
             }),
@@ -231,6 +230,8 @@ export class HistoricalPriceService {
             if (r.status === 'fulfilled' && r.value) {
                 quotes.push(r.value)
                 console.log(`\x1b[36m[HistoricalPrice]\x1b[0m ${validPools[i].type.toUpperCase()} pool ${validPools[i].poolAddress} → quote SUCCESS`)
+            } else if (r.status === 'fulfilled') {
+                console.warn(`\x1b[36m[HistoricalPrice]\x1b[0m ${validPools[i].type.toUpperCase()} pool ${validPools[i].poolAddress} → skipped (no quote)`)
             } else if (r.status === 'rejected') {
                 console.warn(`\x1b[36m[HistoricalPrice]\x1b[0m ${validPools[i].type.toUpperCase()} pool ${validPools[i].poolAddress} → FAILED: ${(r.reason as Error)?.message?.slice(0, 120)}`)
             }
@@ -361,12 +362,12 @@ export class HistoricalPriceService {
         poolAddress: Address,
         sqrtPriceX96: bigint,
         liquidity: bigint,
-        tick: number,
         fee: number,
         token0Address: Address,
         token1Address: Address,
     ): PriceQuote | null {
         if (liquidity <= 0n || sqrtPriceX96 <= 0n) {
+            console.warn(`[HistoricalPrice] V3 pool ${poolAddress} skipped: liquidity=${liquidity} sqrtPriceX96=${sqrtPriceX96}`)
             return null
         }
 
@@ -376,60 +377,19 @@ export class HistoricalPriceService {
         const tokenOutIsToken1 = sameAddress(tokenOut.address, token1Address)
 
         if ((!tokenInIsToken0 && !tokenInIsToken1) || (!tokenOutIsToken0 && !tokenOutIsToken1)) {
+            console.warn(`[HistoricalPrice] V3 pool ${poolAddress} skipped: token mismatch for ${tokenIn.symbol}->${tokenOut.symbol}`)
             return null
         }
 
-        const token0 = tokenInIsToken0 ? tokenIn : tokenOut
-        const token1 = tokenInIsToken1 ? tokenIn : tokenOut
-
-        const token0Instance =
-            dex.protocol === 'pancakeswap'
-                ? new CakeToken(token0.chainId, token0.address, token0.decimals, token0.symbol, token0.name)
-                : new UniToken(token0.chainId, token0.address, token0.decimals, token0.symbol, token0.name)
-
-        const token1Instance =
-            dex.protocol === 'pancakeswap'
-                ? new CakeToken(token1.chainId, token1.address, token1.decimals, token1.symbol, token1.name)
-                : new UniToken(token1.chainId, token1.address, token1.decimals, token1.symbol, token1.name)
-
-        let midPriceQ18 = 0n
-        try {
-            const pool =
-                dex.protocol === 'pancakeswap'
-                    ? new CakePool(
-                        token0Instance as CakeToken,
-                        token1Instance as CakeToken,
-                        fee,
-                        sqrtPriceX96.toString(),
-                        liquidity.toString(),
-                        tick,
-                    )
-                    : new UniPool(
-                        token0Instance as UniToken,
-                        token1Instance as UniToken,
-                        fee,
-                        sqrtPriceX96.toString(),
-                        liquidity.toString(),
-                        tick,
-                    )
-
-            const tokenInInstance = tokenInIsToken0 ? token0Instance : token1Instance
-            const price = tokenInIsToken0 ? pool.token0Price : pool.token1Price
-            midPriceQ18 = computeMidPriceQ18FromPrice(
-                dex.protocol,
-                tokenInInstance as any,
-                tokenOut.decimals,
-                price,
-            )
-        } catch (error) {
-            console.warn(
-                `[HistoricalPrice] Failed to create V3 pool instance:`,
-                (error as Error).message,
-            )
-            return null
-        }
+        const midPriceQ18 = computeV3MidPriceQ18FromSqrtPriceX96(
+            sqrtPriceX96,
+            tokenIn.decimals,
+            tokenOut.decimals,
+            tokenInIsToken0,
+        )
 
         if (midPriceQ18 <= 0n) {
+            console.warn(`[HistoricalPrice] V3 pool ${poolAddress} skipped: midPriceQ18=${midPriceQ18}`)
             return null
         }
 
@@ -443,6 +403,7 @@ export class HistoricalPriceService {
         )
 
         if (amountOutRaw <= 0n) {
+            console.warn(`[HistoricalPrice] V3 pool ${poolAddress} skipped: amountOut=${amountOutRaw} amountIn=${amountIn}`)
             return null
         }
 
