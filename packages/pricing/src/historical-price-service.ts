@@ -1,5 +1,6 @@
 import { CurrencyAmount as CakeCurrencyAmount, Token as CakeToken } from '@pancakeswap/swap-sdk-core'
 import { Pair as CakePair } from '@pancakeswap/v2-sdk'
+import { Pool as CakePool } from '@pancakeswap/v3-sdk'
 import { CurrencyAmount as UniCurrencyAmount, Token as UniToken } from '@uniswap/sdk-core'
 import { Pair as UniPair } from '@uniswap/v2-sdk'
 import { Pool as UniPool } from '@uniswap/v3-sdk'
@@ -13,11 +14,12 @@ import {
     ZERO_ADDRESS,
     normalizeAddress,
 } from './contracts'
-import { Q18, minBigInt, scaleToQ18 } from './math'
+import { minBigInt, scaleToQ18 } from './math'
 import {
     computeExecutionPriceQ18,
     computeMidPriceQ18FromPrice,
     computePriceImpactBps,
+    estimateAmountOutFromMidPrice,
     estimateGasForRoute,
     toRawAmount,
 } from './quote-math'
@@ -182,7 +184,7 @@ export class HistoricalPriceService {
                         chain, item.dex, tokenIn, tokenOut, amountIn, item.poolAddress, reserveIn, reserveOut,
                     )
                 } else {
-                    const [slot0Data, liquidityValue, _token0, _token1] = await Promise.all([
+                    const [slot0Data, liquidityValue, token0Addr, token1Addr] = await Promise.all([
                         client.readContract({
                             address: item.poolAddress,
                             abi: V3_POOL_ABI,
@@ -211,12 +213,14 @@ export class HistoricalPriceService {
 
                     const slotData = slot0Data as readonly [bigint, number, number, number, number, number, boolean]
                     const liq = liquidityValue as bigint
+                    const token0Address = normalizeAddress(token0Addr as Address)
+                    const token1Address = normalizeAddress(token1Addr as Address)
 
                     if (liq <= 0n) return null
 
                     return this.computeV3Quote(
                         chain, item.dex, tokenIn, tokenOut, amountIn, item.poolAddress,
-                        slotData[0], liq, Number(slotData[1]), item.fee!,
+                        slotData[0], liq, Number(slotData[1]), item.fee!, token0Address, token1Address,
                     )
                 }
             }),
@@ -359,39 +363,63 @@ export class HistoricalPriceService {
         liquidity: bigint,
         tick: number,
         fee: number,
+        token0Address: Address,
+        token1Address: Address,
     ): PriceQuote | null {
         if (liquidity <= 0n || sqrtPriceX96 <= 0n) {
             return null
         }
 
-        // Compute mid-price from sqrtPriceX96
-        // sqrtPriceX96 = sqrt(price) * 2^96
-        // price (token1/token0) = (sqrtPriceX96 / 2^96)^2
-        const tokenInInstance = new UniToken(
-            tokenIn.chainId,
-            tokenIn.address,
-            tokenIn.decimals,
-            tokenIn.symbol,
-            tokenIn.name,
-        )
-        const tokenOutInstance = new UniToken(
-            tokenOut.chainId,
-            tokenOut.address,
-            tokenOut.decimals,
-            tokenOut.symbol,
-            tokenOut.name,
-        )
+        const tokenInIsToken0 = sameAddress(tokenIn.address, token0Address)
+        const tokenInIsToken1 = sameAddress(tokenIn.address, token1Address)
+        const tokenOutIsToken0 = sameAddress(tokenOut.address, token0Address)
+        const tokenOutIsToken1 = sameAddress(tokenOut.address, token1Address)
 
-        // Use SDK to compute mid-price from pool state
-        let pool: UniPool
+        if ((!tokenInIsToken0 && !tokenInIsToken1) || (!tokenOutIsToken0 && !tokenOutIsToken1)) {
+            return null
+        }
+
+        const token0 = tokenInIsToken0 ? tokenIn : tokenOut
+        const token1 = tokenInIsToken1 ? tokenIn : tokenOut
+
+        const token0Instance =
+            dex.protocol === 'pancakeswap'
+                ? new CakeToken(token0.chainId, token0.address, token0.decimals, token0.symbol, token0.name)
+                : new UniToken(token0.chainId, token0.address, token0.decimals, token0.symbol, token0.name)
+
+        const token1Instance =
+            dex.protocol === 'pancakeswap'
+                ? new CakeToken(token1.chainId, token1.address, token1.decimals, token1.symbol, token1.name)
+                : new UniToken(token1.chainId, token1.address, token1.decimals, token1.symbol, token1.name)
+
+        let midPriceQ18 = 0n
         try {
-            pool = new UniPool(
-                tokenInInstance,
-                tokenOutInstance,
-                fee,
-                sqrtPriceX96.toString(),
-                liquidity.toString(),
-                tick,
+            const pool =
+                dex.protocol === 'pancakeswap'
+                    ? new CakePool(
+                        token0Instance as CakeToken,
+                        token1Instance as CakeToken,
+                        fee,
+                        sqrtPriceX96.toString(),
+                        liquidity.toString(),
+                        tick,
+                    )
+                    : new UniPool(
+                        token0Instance as UniToken,
+                        token1Instance as UniToken,
+                        fee,
+                        sqrtPriceX96.toString(),
+                        liquidity.toString(),
+                        tick,
+                    )
+
+            const tokenInInstance = tokenInIsToken0 ? token0Instance : token1Instance
+            const price = tokenInIsToken0 ? pool.token0Price : pool.token1Price
+            midPriceQ18 = computeMidPriceQ18FromPrice(
+                dex.protocol,
+                tokenInInstance as any,
+                tokenOut.decimals,
+                price,
             )
         } catch (error) {
             console.warn(
@@ -401,27 +429,18 @@ export class HistoricalPriceService {
             return null
         }
 
-        // Get mid-price via SDK
-        const midPriceQ18 = computeMidPriceQ18FromPrice(
-            dex.protocol,
-            tokenInInstance as any,
-            tokenOut.decimals,
-            pool.token0Price,
-        )
-
         if (midPriceQ18 <= 0n) {
             return null
         }
 
-        // For historical V3 quotes, we approximate amountOut from midPrice
-        // (we can't call the Quoter at a historical block easily)
-        // Apply fee deduction: amountOut ≈ amountIn * midPrice * (1 - fee/1e6)
-        const feeDeduction = 1_000_000n - BigInt(fee)
-        const adjustedAmountIn = (amountIn * feeDeduction) / 1_000_000n
-
-        const inFactor = 10n ** BigInt(tokenIn.decimals)
-        const outFactor = 10n ** BigInt(tokenOut.decimals)
-        const amountOutRaw = (adjustedAmountIn * midPriceQ18 * outFactor) / (Q18 * inFactor)
+        // Historical V3 quotes are estimated from slot0 + fee (no quoter call at a past block).
+        const amountOutRaw = estimateAmountOutFromMidPrice(
+            midPriceQ18,
+            amountIn,
+            tokenIn.decimals,
+            tokenOut.decimals,
+            fee,
+        )
 
         if (amountOutRaw <= 0n) {
             return null

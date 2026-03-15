@@ -212,12 +212,15 @@ export class PoolDiscovery {
     }
 
     if (v3Candidates.length > 0) {
-      const quoterCalls = v3Candidates.map((candidate) => {
+      const quoterCalls: any[] = []
+      const quoterCandidates: { dex: DexConfig; snapshot: V3PoolSnapshot }[] = []
+
+      v3Candidates.forEach((candidate) => {
         if (!candidate.dex.quoterAddress) {
           console.warn(`[PoolDiscovery] Missing quoter address for DEX ${candidate.dex.id}`)
-          return null
+          return
         }
-        return {
+        quoterCalls.push({
           address: candidate.dex.quoterAddress,
           abi: V3_QUOTER_ABI,
           functionName: 'quoteExactInputSingle',
@@ -228,87 +231,97 @@ export class PoolDiscovery {
             fee: candidate.snapshot.fee,
             sqrtPriceLimitX96: 0n,
           }],
-        }
+        })
+        quoterCandidates.push(candidate)
       })
 
-      const validCalls = quoterCalls.filter((call) => call !== null)
-      if (validCalls.length > 0) {
+      if (quoterCalls.length > 0) {
         try {
           const quoterResults = await client.multicall({
             allowFailure: true,
-            contracts: validCalls as any[],
+            contracts: quoterCalls,
           })
 
-          let resultIndex = 0
-          for (let i = 0; i < v3Candidates.length; i++) {
-            const candidate = v3Candidates[i]!
-            if (!candidate.dex.quoterAddress) continue
+          for (let i = 0; i < quoterCandidates.length; i++) {
+            const candidate = quoterCandidates[i]!
+            const result = quoterResults[i]
+            const midPriceQ18 = this.computeV3MidPriceQ18(candidate.dex, tokenIn, tokenOut, candidate.snapshot)
+            if (midPriceQ18 <= 0n) {
+              continue
+            }
 
-            const result = quoterResults[resultIndex]
-            resultIndex++
+            let amountOut: bigint | null = null
+            let usedMidPriceEstimate = false
 
             if (result && result.status === 'success') {
-              const [amountOut, sqrtPriceX96After, initializedTicksCrossed, gasEstimate] = result.result as readonly [bigint, bigint, number, bigint]
-
-              if (amountOut > 0n) {
-                // Reconstruct quote from Quoter result
-                const executionPriceQ18 = computeExecutionPriceQ18(amountIn, amountOut, tokenIn.decimals, tokenOut.decimals)
-                // Mid price is approximate from slot0, but execution price is exact
-                // We can use slot0 price for mid price
-                const tokenInInstance = new UniToken(tokenIn.chainId, tokenIn.address, tokenIn.decimals, tokenIn.symbol, tokenIn.name)
-                const tokenOutInstance = new UniToken(tokenOut.chainId, tokenOut.address, tokenOut.decimals, tokenOut.symbol, tokenOut.name)
-                const pool = new UniPool(
-                  tokenInInstance,
-                  tokenOutInstance,
-                  candidate.snapshot.fee,
-                  candidate.snapshot.sqrtPriceX96.toString(),
-                  candidate.snapshot.liquidity.toString(),
-                  candidate.snapshot.tick
-                )
-                const midPriceQ18 = computeMidPriceQ18FromPrice(candidate.dex.protocol, tokenInInstance as any, tokenOut.decimals, pool.token0Price)
-
-                const priceImpactBps = computePriceImpactBps(
-                  midPriceQ18,
-                  amountIn,
-                  amountOut,
-                  tokenIn.decimals,
-                  tokenOut.decimals,
-                )
-
-                const hopVersions: RouteHopVersion[] = ['v3']
-                const estimatedGasUnits = estimateGasForRoute(hopVersions) // Or use gasEstimate from quoter? Quoter gas is simulation gas, might be high.
-                const estimatedGasCostWei = gasPriceWei ? gasPriceWei * estimatedGasUnits : null
-
-                quotes.push({
-                  chain: chain.key,
-                  amountIn,
-                  amountOut,
-                  priceQ18: executionPriceQ18,
-                  executionPriceQ18,
-                  midPriceQ18,
-                  priceImpactBps,
-                  path: [tokenIn, tokenOut],
-                  routeAddresses: [tokenIn.address, tokenOut.address],
-                  sources: [
-                    {
-                      dexId: candidate.dex.id,
-                      poolAddress: candidate.snapshot.poolAddress,
-                      feeTier: candidate.snapshot.fee,
-                      amountIn,
-                      amountOut,
-                    },
-                  ],
-                  liquidityScore: candidate.snapshot.liquidity,
-                  hopVersions,
-                  estimatedGasUnits,
-                  estimatedGasCostWei,
-                  gasPriceWei,
-                })
+              const [quotedAmountOut] = result.result as readonly [bigint, bigint, number, bigint]
+              if (quotedAmountOut > 0n) {
+                amountOut = quotedAmountOut
               }
-            } else {
-              // Log failure if needed, but allowFailure=true handles it
-              // console.warn(`[PoolDiscovery] Quoter failed for ${candidate.dex.id} pool ${candidate.snapshot.poolAddress}`)
             }
+
+            if (!amountOut || amountOut <= 0n) {
+              const estimatedAmountOut = estimateAmountOutFromMidPrice(
+                midPriceQ18,
+                amountIn,
+                tokenIn.decimals,
+                tokenOut.decimals,
+                candidate.snapshot.fee,
+              )
+              if (estimatedAmountOut > 0n) {
+                amountOut = estimatedAmountOut
+                usedMidPriceEstimate = true
+              }
+            }
+
+            if (!amountOut || amountOut <= 0n) {
+              continue
+            }
+
+            if (usedMidPriceEstimate && (!result || result.status !== 'success')) {
+              console.warn(
+                `[PoolDiscovery] Quoter failed for ${candidate.dex.id} pool ${candidate.snapshot.poolAddress}; using slot0 estimate`,
+              )
+            }
+
+            const executionPriceQ18 = computeExecutionPriceQ18(amountIn, amountOut, tokenIn.decimals, tokenOut.decimals)
+            const priceImpactBps = computePriceImpactBps(
+              midPriceQ18,
+              amountIn,
+              amountOut,
+              tokenIn.decimals,
+              tokenOut.decimals,
+            )
+
+            const hopVersions: RouteHopVersion[] = ['v3']
+            const estimatedGasUnits = estimateGasForRoute(hopVersions)
+            const estimatedGasCostWei = gasPriceWei ? gasPriceWei * estimatedGasUnits : null
+
+            quotes.push({
+              chain: chain.key,
+              amountIn,
+              amountOut,
+              priceQ18: executionPriceQ18,
+              executionPriceQ18,
+              midPriceQ18,
+              priceImpactBps,
+              path: [tokenIn, tokenOut],
+              routeAddresses: [tokenIn.address, tokenOut.address],
+              sources: [
+                {
+                  dexId: candidate.dex.id,
+                  poolAddress: candidate.snapshot.poolAddress,
+                  feeTier: candidate.snapshot.fee,
+                  amountIn,
+                  amountOut,
+                },
+              ],
+              liquidityScore: candidate.snapshot.liquidity,
+              hopVersions,
+              estimatedGasUnits,
+              estimatedGasCostWei,
+              gasPriceWei,
+            })
           }
         } catch (error) {
           console.warn(`[PoolDiscovery] Quoter multicall failed:`, (error as Error).message)
@@ -318,6 +331,60 @@ export class PoolDiscovery {
 
     console.log(`\x1b[36m[PoolDiscovery]\x1b[0m Found \x1b[32m${quotes.length}\x1b[0m direct quotes for \x1b[33m${tokenIn.symbol}\x1b[0m → \x1b[33m${tokenOut.symbol}\x1b[0m`)
     return quotes
+  }
+
+  private computeV3MidPriceQ18(
+    dex: DexConfig,
+    tokenIn: TokenMetadata,
+    tokenOut: TokenMetadata,
+    snapshot: V3PoolSnapshot,
+  ): bigint {
+    const tokenInIsToken0 = sameAddress(tokenIn.address, snapshot.token0)
+    const tokenInIsToken1 = sameAddress(tokenIn.address, snapshot.token1)
+    const tokenOutIsToken0 = sameAddress(tokenOut.address, snapshot.token0)
+    const tokenOutIsToken1 = sameAddress(tokenOut.address, snapshot.token1)
+
+    if ((!tokenInIsToken0 && !tokenInIsToken1) || (!tokenOutIsToken0 && !tokenOutIsToken1)) {
+      return 0n
+    }
+
+    const token0 = tokenInIsToken0 ? tokenIn : tokenOut
+    const token1 = tokenInIsToken1 ? tokenIn : tokenOut
+
+    try {
+      if (dex.protocol === 'pancakeswap') {
+        const token0Instance = new CakeToken(token0.chainId, token0.address, token0.decimals, token0.symbol, token0.name)
+        const token1Instance = new CakeToken(token1.chainId, token1.address, token1.decimals, token1.symbol, token1.name)
+        const pool = new CakePool(
+          token0Instance,
+          token1Instance,
+          snapshot.fee,
+          snapshot.sqrtPriceX96.toString(),
+          snapshot.liquidity.toString(),
+          snapshot.tick,
+        )
+        const tokenInInstance = tokenInIsToken0 ? token0Instance : token1Instance
+        const price = tokenInIsToken0 ? pool.token0Price : pool.token1Price
+        return computeMidPriceQ18FromPrice(dex.protocol, tokenInInstance as any, tokenOut.decimals, price)
+      }
+
+      const token0Instance = new UniToken(token0.chainId, token0.address, token0.decimals, token0.symbol, token0.name)
+      const token1Instance = new UniToken(token1.chainId, token1.address, token1.decimals, token1.symbol, token1.name)
+      const pool = new UniPool(
+        token0Instance,
+        token1Instance,
+        snapshot.fee,
+        snapshot.sqrtPriceX96.toString(),
+        snapshot.liquidity.toString(),
+        snapshot.tick,
+      )
+      const tokenInInstance = tokenInIsToken0 ? token0Instance : token1Instance
+      const price = tokenInIsToken0 ? pool.token0Price : pool.token1Price
+      return computeMidPriceQ18FromPrice(dex.protocol, tokenInInstance as any, tokenOut.decimals, price)
+    } catch (error) {
+      console.warn(`[PoolDiscovery] Failed to build V3 pool state for ${dex.id}:`, (error as Error).message)
+      return 0n
+    }
   }
 
   async fetchMultiHopQuotes(
